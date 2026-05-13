@@ -525,6 +525,11 @@ class SimShowcase(BaseEffect):
     NAME   = 'Sim Showcase'
     AUTHOR = 'unicorn-viz drop-in'
     TAGS   = ['3d', 'usd', 'simulation', 'audio', 'drop-in']
+    HELP_ENTRIES = [
+        ('Sim Showcase', 'Ctrl+N', 'Next USD scene'),
+        ('Sim Showcase', 'Ctrl+P', 'Prev USD scene'),
+        ('Sim Showcase', 'Ctrl+R', 'Random USD scene'),
+    ]
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -534,6 +539,7 @@ class SimShowcase(BaseEffect):
         self.parameters = {
             'speed': 1.0,
             'mix_time': 14.0,
+            'camera_energy': 1.0,
         }
 
         self._mesh_prog  = self._make_program(_VERT_MESH,   _FRAG_MESH)
@@ -549,10 +555,12 @@ class SimShowcase(BaseEffect):
         self._beat     = 0.0
         self._bloom    = 0.0
         self._orbit    = 0.0
+        self._cam_time = 0.0
         self._pal_shift = 0.0
         self._style_index = 0
         self._style_order: list[int] = list(range(len(_STYLE_PRESETS)))
         shuffle(self._style_order)
+        self._beat_kick = 0.0
 
         # Pre-allocate camera state
         self._cam_eye    = np.array([0.0, 0.0, 3.0], dtype=np.float32)
@@ -562,7 +570,7 @@ class SimShowcase(BaseEffect):
         # Load USD scenes
         self._scenes = self.__class__._load_scene_pack_cached(
             self.ctx,
-            self.__class__._scene_dir(self.config),
+            self.__class__._scene_dirs(self.config),
         )
 
         # Fallback galaxy
@@ -571,43 +579,91 @@ class SimShowcase(BaseEffect):
 
         log.info('SimShowcase: %d scene(s) ready', len(self._scenes))
 
+    @property
+    def current_position_label(self) -> str:
+        return 'SCENE IDX'
+
+    @property
+    def current_position_text(self) -> str:
+        total = len(self._scenes)
+        if total <= 0:
+            return '-/-'
+        return f'{self._current + 1}/{total}'
+
     # ------------------------------------------------------------------
     # Class-level scene dir / cache
     # ------------------------------------------------------------------
 
     @classmethod
-    def _scene_dir(cls, cfg: dict) -> Path:
-        override = cfg.get('scene_dir', '') if cfg else ''
-        if override:
-            p = Path(override).expanduser()
-            if p.is_dir():
-                return p
+    def _scene_dirs(cls, cfg: dict) -> list[Path]:
+        """Resolve one or more scene directories from config.
+
+        Supported keys:
+        - scene_dir: single directory override
+        - scene_dirs: comma-separated list of additional directories
+        """
+        dirs: list[Path] = []
+
+        if cfg:
+            single = str(cfg.get('scene_dir', '')).strip()
+            if single:
+                dirs.append(Path(single).expanduser())
+
+            multi_raw = str(cfg.get('scene_dirs', '')).strip()
+            if multi_raw:
+                for token in multi_raw.split(','):
+                    token = token.strip()
+                    if token:
+                        dirs.append(Path(token).expanduser())
+
+        # Built-in + common external drop locations for public USD datasets.
         here = Path(__file__).parent
-        return here / 'scenes'
+        dirs.append(here / 'scenes')
+        dirs.append(Path('assets/sims'))
+        dirs.append(Path('assets/robotics-usd'))
+
+        out: list[Path] = []
+        seen: set[str] = set()
+        for d in dirs:
+            key = str(d.resolve()) if d.exists() else str(d)
+            if key in seen:
+                continue
+            seen.add(key)
+            if d.is_dir():
+                out.append(d)
+        return out
 
     @classmethod
     def _load_scene_pack_cached(
         cls,
         ctx: moderngl.Context,
-        scene_dir: Path,
+        scene_dirs: list[Path],
     ) -> list[_SceneMesh]:
-        cache_key = str(scene_dir.resolve() if scene_dir.exists() else scene_dir)
+        cache_key = '|'.join(
+            str(d.resolve() if d.exists() else d)
+            for d in scene_dirs
+        )
         with _SCENE_LOAD_LOCK:
             cached = _SCENE_CACHE.get(cache_key)
             if cached is not None:
+                for scene in cached:
+                    cls._ensure_scene_gpu_resources(ctx, scene)
                 return cached
 
-        if not scene_dir.is_dir():
-            log.info('SimShowcase: scene_dir %s not found', scene_dir)
+        if not scene_dirs:
+            log.info('SimShowcase: no valid scene directories resolved')
             _SCENE_CACHE[cache_key] = []
             return []
 
-        paths = sorted(
-            p for p in scene_dir.rglob('*')
-            if p.suffix.lower() in ('.usda', '.usdc', '.usdz')
-        )
+        paths_set: set[Path] = set()
+        for scene_dir in scene_dirs:
+            paths_set.update(
+                p for p in scene_dir.rglob('*')
+                if p.suffix.lower() in ('.usda', '.usdc', '.usdz')
+            )
+        paths = sorted(paths_set)
         if not paths:
-            log.info('SimShowcase: no .usd* files in %s', scene_dir)
+            log.info('SimShowcase: no .usd* files in %s', ', '.join(str(d) for d in scene_dirs))
             _SCENE_CACHE[cache_key] = []
             return []
 
@@ -635,12 +691,32 @@ class SimShowcase(BaseEffect):
         scene.indices       = idxs
         scene.point_positions = pts
 
+        cls._upload_scene_buffers(ctx, scene)
+
+    @classmethod
+    def _upload_scene_buffers(cls, ctx: moderngl.Context, scene: _SceneMesh) -> None:
+        """Upload mesh/point arrays into GL buffers for the given scene."""
+        # Ensure stale GPU handles are gone before creating fresh buffers.
+        for attr in ('vbo', 'nbo', 'ibo', 'pbo'):
+            obj = getattr(scene, attr, None)
+            if obj is not None:
+                try:
+                    obj.release()
+                except Exception:
+                    pass
+                setattr(scene, attr, None)
+
         # Upload mesh geometry
+        verts = scene.vertices if scene.vertices is not None else np.zeros((0, 3), dtype=np.float32)
+        norms = scene.normals if scene.normals is not None else np.zeros((0, 3), dtype=np.float32)
+        idxs = scene.indices if scene.indices is not None else np.zeros((0, 3), dtype=np.uint32)
+        pts = scene.point_positions if scene.point_positions is not None else np.zeros((0, 3), dtype=np.float32)
+
         if len(verts) > 0 and len(idxs) > 0:
-            scene.vbo = ctx.buffer(verts.tobytes())
-            scene.nbo = ctx.buffer(norms.tobytes())
+            scene.vbo = ctx.buffer(verts.astype(np.float32).tobytes())
+            scene.nbo = ctx.buffer(norms.astype(np.float32).tobytes())
             scene.ibo = ctx.buffer(idxs.astype(np.uint32).tobytes())
-            scene.vert_count = len(idxs) * 3
+            scene.vert_count = int(len(idxs) * 3)
             # Build a dummy mesh prog VAO; actual prog bound in render
             # We use a dummy context just for the buffer layout here.
         else:
@@ -649,11 +725,19 @@ class SimShowcase(BaseEffect):
         # Upload point geometry
         if len(pts) > 0:
             scene.pbo         = ctx.buffer(pts.tobytes())
-            scene.point_count = len(pts)
+            scene.point_count = int(len(pts))
         else:
             scene.point_count = 0
 
         scene.loaded = True
+
+    @classmethod
+    def _ensure_scene_gpu_resources(cls, ctx: moderngl.Context, scene: _SceneMesh) -> None:
+        """Recreate GPU buffers for cached scenes that were previously destroyed."""
+        need_mesh = scene.vert_count > 0 and (scene.vbo is None or scene.nbo is None or scene.ibo is None)
+        need_points = scene.point_count > 0 and scene.pbo is None
+        if not scene.loaded or need_mesh or need_points:
+            cls._upload_scene_buffers(ctx, scene)
 
     # ------------------------------------------------------------------
     # Fallback galaxy scene
@@ -690,7 +774,9 @@ class SimShowcase(BaseEffect):
         # Bloom decay
         if beat:
             self._bloom = min(1.0, self._bloom + 0.8)
+            self._beat_kick = min(1.0, self._beat_kick + 0.9)
         self._bloom = max(0.0, self._bloom - dt * 4.0)
+        self._beat_kick = max(0.0, self._beat_kick - dt * 3.0)
 
         mix_time = max(1.0, self.parameters['mix_time'])
         self._timer += dt * max(0.1, self.parameters['speed'])
@@ -701,6 +787,7 @@ class SimShowcase(BaseEffect):
 
         # Camera orbit speed modulated by mid
         self._orbit += dt * (0.18 + self._mid * 0.35) * max(0.1, self.parameters['speed'])
+        self._cam_time += dt * (0.55 + self._mid * 0.95) * max(0.1, self.parameters['speed'])
         self._pal_shift += dt * (0.04 + self._mid * 0.08)
 
     def _advance_scene(self) -> None:
@@ -711,6 +798,34 @@ class SimShowcase(BaseEffect):
                 shuffle(self._style_order)
         self._timer    = 0.0
         self._beat_acc = 0.0
+
+    def next_scene(self) -> str | None:
+        """Advance to next scene and return its display name."""
+        self._advance_scene()
+        if not self._scenes:
+            return None
+        return self._scenes[self._current].name
+
+    def prev_scene(self) -> str | None:
+        """Step to previous scene and return its display name."""
+        if not self._scenes:
+            return None
+        self._current = (self._current - 1) % len(self._scenes)
+        self._timer = 0.0
+        self._beat_acc = 0.0
+        return self._scenes[self._current].name
+
+    def random_scene(self) -> str | None:
+        """Jump to a random scene and return its display name."""
+        if not self._scenes:
+            return None
+        if len(self._scenes) > 1:
+            cur = self._current
+            while self._current == cur:
+                self._current = int(self.rng.integers(0, len(self._scenes)))
+        self._timer = 0.0
+        self._beat_acc = 0.0
+        return self._scenes[self._current].name
 
     # ------------------------------------------------------------------
     # Render
@@ -723,23 +838,63 @@ class SimShowcase(BaseEffect):
         scene  = self._scenes[self._current]
         style  = _STYLE_PRESETS[self._style_order[self._style_index]]
         aspect = self.width / max(1, self.height)
+        cam_energy = max(0.2, float(self.parameters.get('camera_energy', 1.0)))
 
-        # Camera orbit
-        radius = style.cam_radius * (1.0 + self._bass * 0.2)
-        elev   = style.cam_elevation + np.sin(self._orbit * 0.3) * 0.15
-        azim   = self._orbit * style.orbit_speed * (1.0 + self._mid * 0.5)
+        # Cinematic fly camera: layered dolly/orbit/strafe with beat accents.
+        drift = self._cam_time
+        radius = style.cam_radius * (
+            1.0
+            + 0.20 * np.sin(drift * 0.23)
+            + 0.10 * np.cos(drift * 0.51)
+            + self._bass * 0.22
+            + self._beat_kick * 0.12
+        )
+        fly_in = max(0.0, np.sin(drift * 0.17 + 0.8)) ** 6
+        fly_scale = 1.0 - (0.58 * fly_in + 0.22 * self._beat_kick)
+        radius *= max(0.22, fly_scale)
+        radius = max(0.55, radius)
+        elev = style.cam_elevation + (
+            0.18 * np.sin(drift * 0.37 + style.palette_phase * 6.28318)
+            + 0.08 * np.cos(drift * 0.79)
+            + self._treble * 0.05
+        )
+        azim = (
+            drift * (0.72 + style.orbit_speed * 0.85)
+            + 0.45 * np.sin(drift * 0.19)
+            + 0.20 * np.sin(self._orbit * 0.7)
+        )
+
+        strafe = np.array([
+            np.sin(drift * 0.29),
+            np.sin(drift * 0.41 + 1.7),
+            np.cos(drift * 0.33 + 0.8),
+        ], dtype=np.float32) * (0.32 * cam_energy)
+
+        target = np.array([
+            0.22 * np.sin(drift * 0.27 + 0.8),
+            0.16 * np.sin(drift * 0.43),
+            0.22 * np.cos(drift * 0.31 + 0.4),
+        ], dtype=np.float32) * cam_energy
+        target += np.array([0.0, self._beat_kick * 0.06, 0.0], dtype=np.float32)
 
         eye = np.array([
             radius * np.cos(elev) * np.cos(azim),
             radius * np.sin(elev),
             radius * np.cos(elev) * np.sin(azim),
         ], dtype=np.float32)
+        eye += strafe
         self._cam_eye[:] = eye
 
+        # Gentle banking via dynamic up vector for a fly-by feel.
+        roll = 0.10 * np.sin(drift * 0.52) + self._treble * 0.08
+        up = np.array([
+            np.sin(roll),
+            np.cos(roll),
+            0.0,
+        ], dtype=np.float32)
+
         proj = _perspective(np.radians(55.0), aspect, 0.01, 60.0)
-        view = _lookat(eye,
-                       np.zeros(3, dtype=np.float32),
-                       np.array([0.0, 1.0, 0.0], dtype=np.float32))
+        view = _lookat(eye, target, up)
 
         # Model: slight bass-pulse scale
         scale_f = 1.0 + self._bass * 0.08
