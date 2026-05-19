@@ -540,6 +540,7 @@ class SimShowcase(BaseEffect):
             'speed': 1.0,
             'mix_time': 14.0,
             'camera_energy': 1.0,
+            'zoom': 1.0,
         }
 
         self._mesh_prog  = self._make_program(_VERT_MESH,   _FRAG_MESH)
@@ -893,7 +894,7 @@ class SimShowcase(BaseEffect):
             0.0,
         ], dtype=np.float32)
 
-        proj = _perspective(np.radians(55.0), aspect, 0.01, 60.0)
+        proj = _perspective(np.radians(55.0 / max(float(self.parameters['zoom']), 0.1)), aspect, 0.01, 60.0)
         view = _lookat(eye, target, up)
 
         # Model: slight bass-pulse scale
