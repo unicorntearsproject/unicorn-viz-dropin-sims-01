@@ -761,9 +761,9 @@ class SimShowcase(BaseEffect):
 
     def update(self, dt: float, audio: AudioData) -> None:
         super().update(dt, audio)
-        self._bass   = float(audio.bass)
-        self._mid    = float(audio.mid)
-        self._treble = float(audio.treble)
+        self._bass   = float(audio.bass_n)
+        self._mid    = float(audio.mid_n)
+        self._treble = float(audio.treble_n)
 
         # Beat accumulator — a burst of beats triggers scene cut
         beat = float(audio.beat)
