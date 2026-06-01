@@ -53,6 +53,7 @@ except Exception:  # pragma: no cover
     _USD = False
 
 from unicornviz.effects.base import BaseEffect, AudioData
+from unicornviz.paths import resolve_path
 
 log = logging.getLogger(__name__)
 
@@ -620,8 +621,8 @@ class SimShowcase(BaseEffect):
         # Built-in + common external drop locations for public USD datasets.
         here = Path(__file__).parent
         dirs.append(here / 'scenes')
-        dirs.append(Path('assets/sims'))
-        dirs.append(Path('assets/robotics-usd'))
+        dirs.append(resolve_path('assets/sims'))
+        dirs.append(resolve_path('assets/robotics-usd'))
 
         out: list[Path] = []
         seen: set[str] = set()
