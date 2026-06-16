@@ -2,3 +2,11 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .DS_Store
+
+# Runtime / editor / venv artefacts
+*.swp
+.venv/
+runtime/
+build/
+notes.md
+notes.txt
