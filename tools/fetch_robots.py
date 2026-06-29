@@ -26,11 +26,16 @@ _RAW = 'https://raw.githubusercontent.com/google-deepmind/mujoco_menagerie/main'
 _OUT = Path(__file__).resolve().parents[3] / 'assets' / 'sims' / 'robots-menagerie'
 _FPS = 30.0
 _FRAMES = 120
+# Per-joint sweep amplitude (degrees), per model. A generic sweep on *every*
+# joint of a many-jointed legged robot splays it into a tangle at large angles,
+# so legged robots get a subtle amplitude (recognisable, lightly moving; the
+# orbiting camera supplies the main motion) while serial arms can sweep boldly.
+_DEFAULT_AMP_DEG = 8.0
 
-# (model dir, main xml, list of body names to start joint-sweep phase variety)
+# (model dir, main xml, per-joint sweep amplitude in degrees)
 _MODELS = [
-    ('universal_robots_ur5e', 'ur5e.xml'),
-    ('unitree_go2', 'go2.xml'),
+    ('universal_robots_ur5e', 'ur5e.xml', 16.0),  # serial arm — bold sweep reads well
+    ('unitree_go2', 'go2.xml', 4.0),              # 12-DOF quadruped — subtle, stays a dog
 ]
 
 
@@ -113,7 +118,7 @@ def _resolve_joint_axes(root: ET.Element) -> dict:
 
 
 # --------------------------------------------------------------------- conversion
-def convert(model_dir: str, xml_name: str) -> Path | None:
+def convert(model_dir: str, xml_name: str, amp_deg: float = _DEFAULT_AMP_DEG) -> Path | None:
     xml = _get(f'{_RAW}/{model_dir}/{xml_name}')
     root = ET.fromstring(xml)  # nosec B314 - XML is fetched from a fixed GitHub raw URL for known MuJoCo model files
     meshdir = (root.find('compiler').get('meshdir', 'assets')
@@ -166,7 +171,7 @@ def convert(model_dir: str, xml_name: str) -> Path | None:
             jpos = _floats(joint.get('pos'), [0, 0, 0])
             phase = joint_n[0] * 0.7
             joint_n[0] += 1
-            amp = math.radians(35.0)
+            amp = math.radians(amp_deg)
             op = bx.AddTransformOp()
             for f in range(_FRAMES + 1):
                 ang = amp * math.sin(_TAU * f / _FRAMES + phase)
@@ -217,9 +222,9 @@ if __name__ == '__main__':
                '(https://github.com/google-deepmind/mujoco_menagerie),',
                'licensed under Apache-2.0. Each model retains its upstream '
                'LICENSE; see the per-model directories upstream.', '']
-    for md, xml in _MODELS:
+    for md, xml, amp in _MODELS:
         try:
-            out = convert(md, xml)
+            out = convert(md, xml, amp)
             print('wrote', out)
             credits.append(f'- {md}: {_RAW}/{md}')
         except Exception as exc:
