@@ -49,6 +49,7 @@ The audio-reactive parameters are weighted by the scene's presentation style and
 speed = 1.0
 dwell_min = 7.0              # min seconds a scene stays up
 dwell_max = 20.0             # max seconds; each scene picks a random dwell in range
+camera_distance = 0.8        # <1 pulls the camera in (larger subject)
 scene_dir = ""               # override path; empty = bundled scenes folder
 # scene_dirs = "drop-ins/sims-01/scenes,assets/sims"   # extra dirs (comma list)
 # --- Skinned/animated USD characters (UsdSkel rigs) ---

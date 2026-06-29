@@ -416,6 +416,9 @@ class SimShowcase(BaseEffect):
         self._dwell_min = max(0.5, float(self.config.get('dwell_min', 7.0)))
         self._dwell_max = max(self._dwell_min,
                               float(self.config.get('dwell_max', 20.0)))
+        # Camera distance multiplier (<1 pulls the camera in / makes the subject
+        # larger). 0.8 = a noticeable ~20% closer baseline without crowding.
+        self._cam_distance = max(0.3, float(self.config.get('camera_distance', 0.8)))
 
         self._mesh_prog  = self._make_program(_VERT_MESH,   _FRAG_MESH)
         self._point_prog = self._make_program(_VERT_POINTS, _FRAG_POINTS)
@@ -460,16 +463,20 @@ class SimShowcase(BaseEffect):
             pose_time=float(pose_t) if pose_t is not None else None,
             blendshapes=self._face_audio_react,
         )
-        self._scenes = self.__class__._load_scene_pack_cached(
+        # Copy the cached list so we can shuffle per-instance without mutating
+        # the shared cache; a random order (and thus a random first scene) makes
+        # each run distinct per the effect-randomization guideline.
+        self._scenes = list(self.__class__._load_scene_pack_cached(
             self.ctx,
             self.__class__._scene_dirs(self.config),
             load_opts,
-        )
+        ))
 
         # Fallback galaxy
         if not self._scenes:
             self._scenes = [self._make_galaxy_scene()]
 
+        shuffle(self._scenes)
         log.info('SimShowcase: %d scene(s) ready', len(self._scenes))
         self._announce_scene('initial')
 
@@ -848,7 +855,8 @@ class SimShowcase(BaseEffect):
         fly_in = max(0.0, np.sin(drift * 0.17 + 0.8)) ** 6
         fly_scale = 1.0 - (0.58 * fly_in + 0.22 * self._beat_kick)
         radius *= max(0.22, fly_scale)
-        radius = max(0.55, radius)
+        radius *= self._cam_distance      # pull the baseline camera in a touch
+        radius = max(0.5, radius)
         elev = style.cam_elevation + (
             0.18 * np.sin(drift * 0.37 + style.palette_phase * 6.28318)
             + 0.08 * np.cos(drift * 0.79)
