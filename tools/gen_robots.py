@@ -226,9 +226,55 @@ def build_hexapod(out: Path):
     print('wrote', out)
 
 
+# ---------------------------------------------------------------------------
+# Robotic hand — fingers curl in a grasp/release cycle
+# ---------------------------------------------------------------------------
+
+def _finger(stage, parent, name, base, phase, segs=3, seg=0.55,
+            amp=55.0, splay=0.0, oppose=0.0):
+    """A multi-knuckle finger extending +Y that curls forward (+Z) at each
+    joint. ``splay`` (rotateZ) spreads it; ``oppose`` (rotateY) turns the thumb.
+    """
+    root = _xform(stage, f'{parent}/{name}')
+    root.AddTranslateOp().Set(Gf.Vec3d(*base))
+    if oppose:
+        root.AddRotateYOp().Set(float(oppose))
+    if splay:
+        root.AddRotateZOp().Set(float(splay))
+    path = f'{parent}/{name}'
+    for i in range(segs):
+        jp = f'{path}/J{i}'
+        joint = _xform(stage, jp)
+        joint.AddTranslateOp().Set(Gf.Vec3d(0, 0.0 if i == 0 else seg, 0))
+        # Accumulating curl; distal joints bend a little more for a natural fist.
+        k = amp * (0.6 + 0.4 * i / max(1, segs - 1))
+        _anim_rotate(joint, lambda f, k=k: (
+            k * (1.0 - math.cos(_phase(f) + phase)) * 0.5, 0, 0))
+        _add_mesh(stage, f'{jp}/Bone', _box(0, seg / 2, 0, 0.26, seg, 0.26))
+        path = jp
+
+
+def build_robot_hand(out: Path):
+    stage, root = _new_stage('RobotHand')
+    _add_mesh(stage, '/RobotHand/Forearm', _cylinder(0, -1.0, 0, 0.5, 1.4, 16))
+    _add_mesh(stage, '/RobotHand/Palm', _box(0, 0, 0, 1.9, 0.45, 1.4))
+    # Four fingers across X, slightly fanned, phased for a rolling grasp wave.
+    fingers = [(-0.62, 0.0, -10.0), (-0.21, 0.05, -3.0),
+               (0.21, 0.05, 3.0), (0.62, 0.0, 10.0)]
+    for i, (x, ph_extra, splay) in enumerate(fingers):
+        _finger(stage, '/RobotHand', f'Finger{i}', (x, 0.22, 0.1),
+                phase=0.5 * i, splay=splay)
+    # Opposable thumb on the side, shorter, turned across the palm.
+    _finger(stage, '/RobotHand', 'Thumb', (-0.95, -0.15, 0.2),
+            phase=0.9, segs=2, seg=0.55, amp=45.0, splay=55.0, oppose=40.0)
+    stage.GetRootLayer().Export(str(out))
+    print('wrote', out)
+
+
 if __name__ == '__main__':
     _SCENES.mkdir(parents=True, exist_ok=True)
     build_robot_arm(_SCENES / 'robot_arm.usda')
     build_drone(_SCENES / 'robot_drone.usda')
     build_quadruped(_SCENES / 'robot_quadruped.usda')
     build_hexapod(_SCENES / 'robot_hexapod.usda')
+    build_robot_hand(_SCENES / 'robot_hand.usda')
