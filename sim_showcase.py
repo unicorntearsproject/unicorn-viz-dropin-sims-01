@@ -71,6 +71,9 @@ UsdLoadOptions = _usd_scene.LoadOptions
 log = logging.getLogger(__name__)
 
 _SCENE_CACHE: dict[str, list['_SceneMesh']] = {}
+# Cached scene-file selection (random motion-variant pick) shared between the
+# background prewarm and the on-activate load so they bake/use the same clips.
+_SELECTION_CACHE: dict[str, list[Path]] = {}
 _SCENE_LOAD_LOCK = threading.Lock()
 
 # Directory names that hold referenced sub-assets / animation variants rather
@@ -554,29 +557,21 @@ class SimShowcase(BaseEffect):
         return out
 
     @classmethod
-    def _load_scene_pack_cached(
-        cls,
-        ctx: moderngl.Context,
-        scene_dirs: list[Path],
-        opts: 'UsdLoadOptions',
-        motions_per_character: int = 1,
-    ) -> list[_SceneMesh]:
-        cache_key = '|'.join(
-            str(d.resolve() if d.exists() else d)
-            for d in scene_dirs
-        ) + (f'#anim={opts.animate},frames={opts.frames},'
-             f'blend={opts.blendshapes},motions={motions_per_character}')
-        with _SCENE_LOAD_LOCK:
-            cached = _SCENE_CACHE.get(cache_key)
-            if cached is not None:
-                for scene in cached:
-                    cls._ensure_scene_gpu_resources(ctx, scene)
-                return cached
+    def _discover_scene_files(
+        cls, scene_dirs: list[Path], motions_per_character: int,
+    ) -> list[Path]:
+        """Resolve the scene file list (random motion-variant pick included).
 
-        if not scene_dirs:
-            log.info('SimShowcase: no valid scene directories resolved')
-            _SCENE_CACHE[cache_key] = []
-            return []
+        Cached per (dirs, motions) so the background prewarm and the on-activate
+        load agree on the *same* shuffled selection — otherwise the prewarm would
+        bake different motion clips than the effect ends up using.
+        """
+        sel_key = '|'.join(str(d.resolve() if d.exists() else d)
+                           for d in scene_dirs) + f'#m{motions_per_character}'
+        with _SCENE_LOAD_LOCK:
+            sel = _SELECTION_CACHE.get(sel_key)
+        if sel is not None:
+            return sel
 
         paths_set: set[Path] = set()
         for scene_dir in scene_dirs:
@@ -608,7 +603,69 @@ class SimShowcase(BaseEffect):
                 expanded.extend(dynamic[:max(1, motions_per_character)])
             else:
                 expanded.append(p)
-        paths = expanded
+        with _SCENE_LOAD_LOCK:
+            _SELECTION_CACHE[sel_key] = expanded
+        return expanded
+
+    @classmethod
+    def prewarm_async(cls, cfg: dict) -> None:
+        """Pre-bake scenes (GL-free) on a daemon thread during app splash.
+
+        Populates usd_scene's CPU cache so the first activation only needs fast
+        GL uploads instead of stalling on USD parsing + skinning/rigid baking.
+        No-op without OpenUSD. Safe to call once at startup.
+        """
+        if not _usd_scene._USD:  # noqa: SLF001 - module-level availability flag
+            return
+        ecfg = cfg or {}
+        scene_dirs = cls._scene_dirs(ecfg)
+        opts = UsdLoadOptions(
+            animate=bool(ecfg.get('skel_animate', True)),
+            frames=max(2, int(ecfg.get('skel_frames', 48))),
+            pose_time=(float(ecfg['skel_pose_time'])
+                       if ecfg.get('skel_pose_time') is not None else None),
+            blendshapes=bool(ecfg.get('face_audio_react', False)),
+        )
+        motions = max(1, int(ecfg.get('motions_per_character', 1)))
+
+        def _worker() -> None:
+            try:
+                files = cls._discover_scene_files(scene_dirs, motions)
+                for f in files:
+                    usd_load_scene(f, opts)   # result stored in usd_scene CPU cache
+                log.info('SimShowcase: prewarmed %d scene(s) in background',
+                         len(files))
+            except Exception as exc:
+                log.warning('SimShowcase prewarm failed: %s', exc)
+
+        threading.Thread(target=_worker, name='sims-prewarm', daemon=True).start()
+
+    @classmethod
+    def _load_scene_pack_cached(
+        cls,
+        ctx: moderngl.Context,
+        scene_dirs: list[Path],
+        opts: 'UsdLoadOptions',
+        motions_per_character: int = 1,
+    ) -> list[_SceneMesh]:
+        cache_key = '|'.join(
+            str(d.resolve() if d.exists() else d)
+            for d in scene_dirs
+        ) + (f'#anim={opts.animate},frames={opts.frames},'
+             f'blend={opts.blendshapes},motions={motions_per_character}')
+        with _SCENE_LOAD_LOCK:
+            cached = _SCENE_CACHE.get(cache_key)
+            if cached is not None:
+                for scene in cached:
+                    cls._ensure_scene_gpu_resources(ctx, scene)
+                return cached
+
+        if not scene_dirs:
+            log.info('SimShowcase: no valid scene directories resolved')
+            _SCENE_CACHE[cache_key] = []
+            return []
+
+        paths = cls._discover_scene_files(scene_dirs, motions_per_character)
 
         if not paths:
             log.info('SimShowcase: no .usd* files in %s', ', '.join(str(d) for d in scene_dirs))

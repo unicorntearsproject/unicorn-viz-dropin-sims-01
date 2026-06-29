@@ -27,11 +27,18 @@ than hard-coding any single pack's prim layout.
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass, field
 
 import numpy as np
 
 log = logging.getLogger(__name__)
+
+# CPU-side cache of fully-baked scenes (GL-free numpy), keyed by path + options.
+# Lets a background thread pre-bake heavy scenes (skinning / rigid frames) during
+# the app splash so the later GL upload is fast and the first frame never hitches.
+_CPU_CACHE: dict[str, 'LoadedScene'] = {}
+_CPU_LOCK = threading.Lock()
 
 try:
     from pxr import Usd, UsdGeom, UsdSkel, Vt  # type: ignore
@@ -303,6 +310,12 @@ def load_scene(path, options: LoadOptions | None = None) -> LoadedScene | None:
     opts = options or LoadOptions()
     if not _USD:
         return None
+    cache_key = (f'{path}|a{int(opts.animate)}|f{opts.frames}'
+                 f'|p{opts.pose_time}|b{int(opts.blendshapes)}')
+    with _CPU_LOCK:
+        cached = _CPU_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
     try:
         stage = Usd.Stage.Open(str(path))
     except Exception as exc:
@@ -486,7 +499,7 @@ def load_scene(path, options: LoadOptions | None = None) -> LoadedScene | None:
             stacked.append(dense)
         deltas_np = np.stack(stacked, axis=0)
 
-    return LoadedScene(
+    result = LoadedScene(
         name=name,
         vertices=base,
         normals=base_normals,
@@ -498,3 +511,6 @@ def load_scene(path, options: LoadOptions | None = None) -> LoadedScene | None:
         blend_deltas=deltas_np,
         blend_names=blend_names,
     )
+    with _CPU_LOCK:
+        _CPU_CACHE[cache_key] = result
+    return result
