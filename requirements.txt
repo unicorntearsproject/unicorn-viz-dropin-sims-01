@@ -1,0 +1,9 @@
+# sims-01 drop-in dependencies
+#
+# OpenUSD Python bindings (provides the `pxr` module) used to load the bundled
+# .usda / .usdc / .usdz scenes. OPTIONAL: when absent, sim-showcase degrades
+# gracefully to the built-in procedural galaxy fallback instead of the USD
+# scenes (it does not crash).
+#
+# Install with:  pip install -r drop-ins/sims-01/requirements.txt
+usd-core>=23.11

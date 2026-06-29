@@ -103,6 +103,12 @@ Styles cycle automatically with each scene transition.
 
 ### Installing OpenUSD
 
+#### pip (recommended — cross-platform)
+```bash
+pip install -r drop-ins/sims-01/requirements.txt   # installs usd-core
+```
+The PyPI `usd-core` wheel provides the `pxr` module on Linux/macOS/Windows.
+
 #### Fedora / Arch Linux
 ```bash
 sudo dnf install python3-pxr      # Fedora
