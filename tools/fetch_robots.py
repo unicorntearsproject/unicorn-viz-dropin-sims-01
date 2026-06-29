@@ -35,7 +35,7 @@ _MODELS = [
 
 
 def _get(url: str) -> bytes:
-    with urllib.request.urlopen(url, timeout=60) as r:  # noqa: S310 - fixed host
+    with urllib.request.urlopen(url, timeout=60) as r:  # noqa: S310 - fixed host  # nosec B310 - URL is a fixed GitHub raw host, not user input
         return r.read()
 
 
@@ -115,7 +115,7 @@ def _resolve_joint_axes(root: ET.Element) -> dict:
 # --------------------------------------------------------------------- conversion
 def convert(model_dir: str, xml_name: str) -> Path | None:
     xml = _get(f'{_RAW}/{model_dir}/{xml_name}')
-    root = ET.fromstring(xml)
+    root = ET.fromstring(xml)  # nosec B314 - XML is fetched from a fixed GitHub raw URL for known MuJoCo model files
     meshdir = (root.find('compiler').get('meshdir', 'assets')
                if root.find('compiler') is not None else 'assets')
 
