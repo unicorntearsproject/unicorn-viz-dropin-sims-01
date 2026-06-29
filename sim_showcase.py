@@ -463,6 +463,7 @@ class SimShowcase(BaseEffect):
             self._scenes = [self._make_galaxy_scene()]
 
         log.info('SimShowcase: %d scene(s) ready', len(self._scenes))
+        self._announce_scene('initial')
 
     @property
     def current_position_label(self) -> str:
@@ -713,14 +714,37 @@ class SimShowcase(BaseEffect):
         # Advance skeletal-animation playback (slight beat-driven push).
         self._anim_clock += dt * max(0.0, self._skel_speed) * (1.0 + self._beat_kick * 0.5)
 
+    def _reset_scene_clocks(self) -> None:
+        """Reset per-scene timers + animation playback (call on scene change)."""
+        self._timer = 0.0
+        self._beat_acc = 0.0
+        self._anim_clock = 0.0
+        self._dyn_frame = -1
+
+    def _announce_scene(self, reason: str) -> None:
+        """Info-log the scene that just became active."""
+        if not self._scenes:
+            return
+        sc = self._scenes[self._current]
+        kind = (f'animated:{len(sc.frames)}f@{sc.fps:.0f}fps'
+                if sc.frames is not None else
+                ('static-mesh' if sc.vert_count else 'points'))
+        log.info('SimShowcase: now showing [%d/%d] %s (%s, %s) via %s',
+                 self._current + 1, len(self._scenes), sc.name,
+                 kind,
+                 f'verts={sc.vert_count}' if sc.vert_count else f'pts={sc.point_count}',
+                 reason)
+
     def _advance_scene(self) -> None:
         if len(self._scenes) > 1:
             self._current = (self._current + 1) % len(self._scenes)
             self._style_index = (self._style_index + 1) % len(self._style_order)
             if self._style_index == 0:
                 shuffle(self._style_order)
-        self._timer    = 0.0
-        self._beat_acc = 0.0
+            self._reset_scene_clocks()
+            self._announce_scene('auto-advance')
+        else:
+            self._reset_scene_clocks()
 
     def next_scene(self) -> str | None:
         """Advance to next scene and return its display name."""
@@ -734,8 +758,8 @@ class SimShowcase(BaseEffect):
         if not self._scenes:
             return None
         self._current = (self._current - 1) % len(self._scenes)
-        self._timer = 0.0
-        self._beat_acc = 0.0
+        self._reset_scene_clocks()
+        self._announce_scene('prev')
         return self._scenes[self._current].name
 
     def random_scene(self) -> str | None:
@@ -746,8 +770,8 @@ class SimShowcase(BaseEffect):
             cur = self._current
             while self._current == cur:
                 self._current = int(self.rng.integers(0, len(self._scenes)))
-        self._timer = 0.0
-        self._beat_acc = 0.0
+        self._reset_scene_clocks()
+        self._announce_scene('random')
         return self._scenes[self._current].name
 
     # ------------------------------------------------------------------

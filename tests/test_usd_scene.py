@@ -61,6 +61,17 @@ def test_animation_bake_has_motion():
     assert motion > 1e-4
 
 
+def test_animation_pose_upright():
+    _need_orc()
+    # Regression: a wrong skinning-transform multiply order produced a contorted
+    # pose with the wrong axis tallest. A correctly skinned upright humanoid is
+    # tallest along Z (the rig's up axis).
+    s = usd_scene.load_scene(_ORC, usd_scene.LoadOptions(animate=True, frames=8))
+    assert s is not None and s.is_animated
+    span = s.frames[0].max(0) - s.frames[0].min(0)
+    assert int(np.argmax(span)) == 2, f'expected Z tallest, got span {span}'
+
+
 def test_backdrop_filtered_out():
     _need_orc()
     # The bundled LightingStage backdrop (huge plane) must be excluded, else it

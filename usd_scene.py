@@ -190,30 +190,15 @@ def _mesh_topology(prim, vert_offset: int) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 class _SkelBinder:
-    """Resolves a skeleton's bound animation and bakes skinned points.
+    """Wraps a resolved skeleton query, producing per-joint skinning transforms
+    via UsdSkel's authoritative :meth:`ComputeSkinningTransforms` (handles the
+    bind/rest/anim-space conventions correctly)."""
 
-    Built manually because ``UsdSkelCache`` does not resolve an animation bound
-    directly on a ``Skeleton`` prim (as the NVIDIA Reallusion packs author it).
-    """
-
-    def __init__(self, cache, skel_query, anim_query):
+    def __init__(self, skel_query):
         self._sq = skel_query
-        self._aq = anim_query
-        self._topo = skel_query.GetTopology()
-        order = skel_query.GetJointOrder()
-        self._inv_bind = [m.GetInverse()
-                          for m in skel_query.GetJointWorldBindTransforms()]
-        self._rest_local = skel_query.ComputeJointLocalTransforms(
-            Usd.TimeCode.Default())
-        self._mapper = UsdSkel.AnimMapper(anim_query.GetJointOrder(), order)
 
     def skinning_transforms(self, time):
-        anim_local = self._aq.ComputeJointLocalTransforms(time)
-        local = Vt.Matrix4dArray(list(self._rest_local))
-        local = self._mapper.RemapTransforms(anim_local, local)
-        skel_space = UsdSkel.ConcatJointTransforms(self._topo, local)
-        return Vt.Matrix4dArray(
-            [skel_space[i] * self._inv_bind[i] for i in range(len(local))])
+        return self._sq.ComputeSkinningTransforms(time)
 
 
 def _animation_source(skel_prim):
@@ -223,6 +208,16 @@ def _animation_source(skel_prim):
     if not targets:
         return None
     return skel_prim.GetStage().GetPrimAtPath(targets[0])
+
+
+def _ancestor_skel_root(prim):
+    """Return the nearest SkelRoot ancestor of ``prim`` (inclusive), or None."""
+    cur = prim
+    while cur and cur.IsValid():
+        if cur.IsA(UsdSkel.Root):
+            return cur
+        cur = cur.GetParent()
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -299,6 +294,21 @@ def load_scene(path, options: LoadOptions | None = None) -> LoadedScene | None:
     fps = stage.GetTimeCodesPerSecond() or 30.0
 
     # --- Resolve skeleton binding (if any) ---------------------------------
+    # Mirror each skeleton's bound animation onto its SkelRoot (in-memory): the
+    # NVIDIA packs author skel:animationSource on the Skeleton prim, which
+    # UsdSkelCache does not auto-resolve, so the high-level skinning API would
+    # otherwise see no animation. Authoring it on the SkelRoot makes the cache
+    # resolve it and ComputeSkinningTransforms returns the correct pose.
+    for skel_prim in (p for p in stage.Traverse() if p.IsA(UsdSkel.Skeleton)):
+        anim_prim = _animation_source(skel_prim)
+        sroot = _ancestor_skel_root(skel_prim)
+        if anim_prim is None or sroot is None:
+            continue
+        rb = UsdSkel.BindingAPI.Apply(sroot)
+        if not (rb.GetAnimationSourceRel()
+                and rb.GetAnimationSourceRel().GetTargets()):
+            rb.CreateAnimationSourceRel().SetTargets([anim_prim.GetPath()])
+
     cache = UsdSkel.Cache()
     binders: dict[str, _SkelBinder] = {}   # skinnable prim path -> binder
     skinning_query: dict[str, object] = {}
@@ -306,14 +316,10 @@ def load_scene(path, options: LoadOptions | None = None) -> LoadedScene | None:
     for root in roots:
         cache.Populate(UsdSkel.Root(root), Usd.TraverseInstanceProxies())
     for skel_prim in (p for p in stage.Traverse() if p.IsA(UsdSkel.Skeleton)):
-        anim_prim = _animation_source(skel_prim)
-        if anim_prim is None:
-            continue
         skel_query = cache.GetSkelQuery(UsdSkel.Skeleton(skel_prim))
-        anim_query = cache.GetAnimQuery(anim_prim)
-        if not skel_query or not anim_query:
+        if not skel_query or not skel_query.GetAnimQuery():
             continue
-        binder = _SkelBinder(cache, skel_query, anim_query)
+        binder = _SkelBinder(skel_query)
         for child in Usd.PrimRange(skel_prim.GetParent()):
             sq = cache.GetSkinningQuery(child)
             if sq:
