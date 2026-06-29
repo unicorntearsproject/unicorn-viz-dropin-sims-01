@@ -32,8 +32,29 @@ def _need_orc():
         pytest.skip(f'curated character asset not present: {_ORC}')
 
 
+# Bundled, license-free procedural robots (committed; always present).
+_DRONE = Path(__file__).resolve().parents[1] / 'scenes' / 'robot_drone.usda'
+
+
 def test_missing_stage_returns_none():
     assert usd_scene.load_scene('/nonexistent/path/none.usd') is None
+
+
+def test_rigid_robot_animates():
+    # The drone animates via time-varying joint Xforms (no skeleton); the loader
+    # must bake those rigid frames, not treat it as static.
+    assert _DRONE.is_file(), f'bundled robot missing: {_DRONE}'
+    s = usd_scene.load_scene(_DRONE, usd_scene.LoadOptions(animate=True, frames=12))
+    assert s is not None and s.is_animated
+    assert s.frames.shape[0] == 12
+    motion = max(float(np.abs(f - s.frames[0]).max()) for f in s.frames)
+    assert motion > 0.05, f'expected rigid motion, got {motion}'
+
+
+def test_rigid_robot_static_when_not_animating():
+    s = usd_scene.load_scene(_DRONE, usd_scene.LoadOptions(animate=False))
+    assert s is not None
+    assert s.frames is None  # animate=False → single static pose
 
 
 def test_static_load_normalised():

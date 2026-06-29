@@ -151,6 +151,24 @@ If the USD runtime is not available, Sim Showcase will:
 
 This is a graceful degradation; the effect remains visually interesting and responsive to audio.
 
+## Bundled robots (license-free)
+
+Two procedural, articulated robots ship in `scenes/` and animate out of the box
+via time-varying joint transforms (no skeleton): **`robot_arm`** (5-axis
+pick/place sweep) and **`robot_drone`** (quadcopter with spinning rotors). They
+are authored from scratch (see `tools/gen_robots.py`) so they carry no
+third-party licence. Regenerate with:
+
+```bash
+python drop-ins/sims-01/tools/gen_robots.py
+```
+
+The loader handles both **skinned** (UsdSkel character) animation and **rigid /
+articulated** (joint-Xform) animation, so real robot USD assets — e.g. NVIDIA
+Isaac or open-source URDF→USD rigs — drop into a scene dir and animate the same
+way (subject to their licence; curate restricted packs locally per
+`assets/sims/README.md`).
+
 ## Interaction with Other Drop-ins
 
 - **Compatible with** all multi-head, webcam, and streaming drop-ins

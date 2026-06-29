@@ -161,11 +161,11 @@ def _is_skipped(prim, opts: LoadOptions) -> bool:
     return any(k in low for k in opts.skip_path_keywords)
 
 
-def _local_to_world(prim) -> np.ndarray:
+def _local_to_world(prim, time=None) -> np.ndarray:
     xf = np.eye(4, dtype=np.float32)
     try:
         gf = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(
-            Usd.TimeCode.Default())
+            time if time is not None else Usd.TimeCode.Default())
         for r in range(4):
             for c in range(4):
                 xf[r, c] = gf[r][c]
@@ -183,9 +183,19 @@ def _mesh_points_world(prim, time) -> np.ndarray | None:
     if raw is None or len(raw) == 0:
         return None
     pts = np.asarray(raw, dtype=np.float32)
-    xf = _local_to_world(prim)
+    xf = _local_to_world(prim, time)   # time-aware: captures rigid joint motion
     homo = np.concatenate([pts, np.ones((len(pts), 1), np.float32)], axis=1)
     return (homo @ xf.T)[:, :3]
+
+
+def _stage_has_rigid_anim(stage) -> bool:
+    """True if any prim's transform is time-varying (rigid/articulated motion,
+    e.g. a robot's joint Xforms) — distinct from UsdSkel skinning."""
+    for prim in stage.Traverse():
+        x = UsdGeom.Xformable(prim)
+        if x and x.TransformMightBeTimeVarying():
+            return True
+    return False
 
 
 def _mesh_topology(prim, vert_offset: int) -> np.ndarray:
@@ -352,7 +362,10 @@ def load_scene(path, options: LoadOptions | None = None) -> LoadedScene | None:
     if end <= start and anim_times:
         # Motion-variant clips often omit stage timecodes; use the keyframes.
         start, end = min(anim_times), max(anim_times)
-    has_anim = bool(binders) and end > start and opts.animate
+    # Rigid (articulated) animation: robots and mechanical rigs animate via
+    # time-varying joint Xforms rather than UsdSkel skinning. Bake those too.
+    rigid_anim = _stage_has_rigid_anim(stage)
+    has_anim = opts.animate and end > start and (bool(binders) or rigid_anim)
     if has_anim:
         n = max(2, int(opts.frames))
         times = [start + (end - start) * i / (n - 1) for i in range(n)]
@@ -382,6 +395,7 @@ def load_scene(path, options: LoadOptions | None = None) -> LoadedScene | None:
         n_local = len(rest)
 
         if binder is not None and sq is not None and has_anim:
+            # Skinned (UsdSkel) mesh — deform per frame.
             mesh = UsdGeom.Mesh(prim)
             for fi, t in enumerate(times):
                 tc = Usd.TimeCode(t)
@@ -390,8 +404,13 @@ def load_scene(path, options: LoadOptions | None = None) -> LoadedScene | None:
                     else Vt.Vec3fArray(list(mesh.GetPointsAttr().Get()))
                 sq.ComputeSkinnedPoints(binder.skinning_transforms(tc), pts, tc)
                 frame_blocks[fi].append(np.asarray(pts, dtype=np.float32))
+        elif has_anim and rigid_anim:
+            # Rigid/articulated mesh — re-sample its world transform per frame.
+            for fi, t in enumerate(times):
+                wp = _mesh_points_world(prim, Usd.TimeCode(t))
+                frame_blocks[fi].append(wp if wp is not None else rest)
         else:
-            # Static (or skinned-but-not-animating): constant across frames.
+            # Static: constant across frames.
             for fi in range(len(times)):
                 frame_blocks[fi].append(rest)
 
