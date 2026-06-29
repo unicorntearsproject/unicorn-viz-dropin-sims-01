@@ -173,6 +173,11 @@ For developers interested in extending or modifying Sim Showcase:
 - The presentation style system allows swapping aesthetics without reloading geometry (useful for beat-driven theme changes)
 - The renderer uses deferred shading with a single forward pass; no G-buffer or shadow maps are employed to keep overhead minimal
 
+## Roadmap
+
+- [Plan: NVIDIA Reallusion USD character sets](docs/planning-usd-characters.md)
+  — supporting skinned/animated/blendshape character rigs (Tier 0–3).
+
 ## 2026-05-22 Update
 
 - Sim Showcase audio channels now consume normalized band dynamics (`bass_n/mid_n/treble_n`) for more consistent behavior across track loudness swings.
