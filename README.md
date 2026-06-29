@@ -50,6 +50,8 @@ speed = 1.0
 dwell_min = 7.0              # min seconds a scene stays up
 dwell_max = 20.0             # max seconds; each scene picks a random dwell in range
 camera_distance = 0.8        # <1 pulls the camera in (larger subject)
+transition = "fade"          # "fade" (dip-to-black between sims) or "cut"
+transition_s = 0.6           # fade duration in seconds (out + in)
 scene_dir = ""               # override path; empty = bundled scenes folder
 # scene_dirs = "drop-ins/sims-01/scenes,assets/sims"   # extra dirs (comma list)
 # --- Skinned/animated USD characters (UsdSkel rigs) ---

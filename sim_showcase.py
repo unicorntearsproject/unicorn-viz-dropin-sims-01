@@ -250,6 +250,7 @@ uniform float iBloom;        // 0..1 bloom from beat
 uniform float iGrain;        // grain amount
 uniform vec2  iResolution;
 uniform vec3  iCamPos;
+uniform float iFade;         // scene-transition dip-to-black [0,1]
 
 out vec4 fragColor;
 
@@ -303,7 +304,7 @@ void main() {
         col += (n - 0.5) * iGrain;
     }
 
-    fragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+    fragColor = vec4(clamp(col, 0.0, 1.0) * iFade, 1.0);
 }
 """
 
@@ -311,6 +312,7 @@ _FRAG_POINTS = """
 #version 330
 // Fragment shader for point-cloud particles — circular soft sprites.
 in vec3 v_color;
+uniform float iFade;         // scene-transition dip-to-black [0,1]
 out vec4 fragColor;
 
 void main() {
@@ -318,7 +320,7 @@ void main() {
     float r = dot(d, d) * 4.0;
     if (r > 1.0) discard;
     float alpha = 1.0 - r;
-    fragColor = vec4(v_color, alpha);
+    fragColor = vec4(v_color * iFade, alpha * iFade);
 }
 """
 
@@ -423,6 +425,13 @@ class SimShowcase(BaseEffect):
         # Camera distance multiplier (<1 pulls the camera in / makes the subject
         # larger). 0.8 = a noticeable ~20% closer baseline without crowding.
         self._cam_distance = max(0.3, float(self.config.get('camera_distance', 0.8)))
+        # Scene-to-scene transition: dip-to-black fade. transition="cut" or
+        # transition_s<=0 disables it (hard cuts).
+        self._transition_s = max(0.0, float(self.config.get('transition_s', 0.6)))
+        self._transitions = (self._transition_s > 0.0
+                             and str(self.config.get('transition', 'fade')).lower() != 'cut')
+        self._fade = 1.0           # 1 = fully visible, 0 = black (mid-transition)
+        self._pending_swap = None  # deferred scene swap, fired at the black point
 
         self._mesh_prog  = self._make_program(_VERT_MESH,   _FRAG_MESH)
         self._point_prog = self._make_program(_VERT_POINTS, _FRAG_POINTS)
@@ -748,11 +757,15 @@ class SimShowcase(BaseEffect):
         self._timer += dt * max(0.1, self.parameters['speed'])
 
         # Advance at the rolled dwell, or let a beat burst cut early — but never
-        # before dwell_min, so each scene stays up a sensible 7-20s.
-        if self._timer >= self._dwell or (
+        # before dwell_min, so each scene stays up a sensible 7-20s. When idle
+        # (not mid-transition), a due advance kicks off a dip-to-black fade.
+        due = self._timer >= self._dwell or (
             self._timer >= self._dwell_min and self._beat_acc >= 1.0
-        ):
-            self._advance_scene()
+        )
+        if (due and len(self._scenes) > 1
+                and self._pending_swap is None and self._fade >= 1.0):
+            self._begin_transition(self._advance_scene)
+        self._tick_transition(dt)
 
         # Camera orbit speed modulated by mid
         self._orbit += dt * (0.18 + self._mid * 0.35) * max(0.1, self.parameters['speed'])
@@ -783,6 +796,30 @@ class SimShowcase(BaseEffect):
                  kind,
                  f'verts={sc.vert_count}' if sc.vert_count else f'pts={sc.point_count}',
                  reason)
+
+    def _begin_transition(self, swap_fn) -> None:
+        """Start a dip-to-black transition; ``swap_fn`` runs at the black point.
+
+        Falls back to an instant swap when transitions are disabled or one is
+        already in progress.
+        """
+        if not self._transitions or self._pending_swap is not None or self._fade < 1.0:
+            swap_fn()
+            return
+        self._pending_swap = swap_fn
+
+    def _tick_transition(self, dt: float) -> None:
+        """Advance the fade envelope: out to black, swap, then back in."""
+        if self._transition_s <= 0.0:
+            return
+        rate = 1.0 / (self._transition_s * 0.5)
+        if self._pending_swap is not None:
+            self._fade = max(0.0, self._fade - dt * rate)
+            if self._fade <= 0.0:
+                self._pending_swap()        # perform the swap at full black
+                self._pending_swap = None
+        elif self._fade < 1.0:
+            self._fade = min(1.0, self._fade + dt * rate)
 
     def _advance_scene(self) -> None:
         if len(self._scenes) > 1:
@@ -973,6 +1010,7 @@ class SimShowcase(BaseEffect):
             su(self._mesh_prog, 'iGrain',      style.grain)
             su(self._mesh_prog, 'iResolution', (float(self.width), float(self.height)))
             su(self._mesh_prog, 'iCamPos',     tuple(float(v) for v in eye))
+            su(self._mesh_prog, 'iFade',       self._fade)
             vao.render(moderngl.TRIANGLES)
             vao.release()
 
@@ -987,6 +1025,7 @@ class SimShowcase(BaseEffect):
             su(self._point_prog, 'iTime',   self.time)
             su(self._point_prog, 'iBass',   self._bass)
             su(self._point_prog, 'iTreble', self._treble)
+            su(self._point_prog, 'iFade',   self._fade)
             pvao.render(moderngl.POINTS)
             pvao.release()
 
