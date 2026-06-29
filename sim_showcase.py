@@ -73,6 +73,11 @@ log = logging.getLogger(__name__)
 _SCENE_CACHE: dict[str, list['_SceneMesh']] = {}
 _SCENE_LOAD_LOCK = threading.Lock()
 
+# Directory names that hold referenced sub-assets / animation variants rather
+# than standalone scenes (skipped during recursive scene discovery so a
+# character loads once as its main rig). Lower-cased for case-insensitive match.
+_SUBASSET_DIRS = frozenset({'materials', 'textures', 'motions', 'props', '.thumbs'})
+
 
 # ---------------------------------------------------------------------------
 # Style presets — same rhythm as other asset showcase effects
@@ -540,7 +545,13 @@ class SimShowcase(BaseEffect):
         for scene_dir in scene_dirs:
             paths_set.update(
                 p for p in scene_dir.rglob('*')
-                if p.suffix.lower() in ('.usda', '.usdc', '.usdz')
+                # ``.usd`` (auto crate/ascii) is just as valid as the explicit
+                # forms — NVIDIA character packs use it for the main rig file.
+                if p.suffix.lower() in ('.usd', '.usda', '.usdc', '.usdz')
+                # Skip referenced sub-assets / animation variants so each
+                # character loads once as its main rig rather than as dozens of
+                # material/texture/motion/prop sub-layers.
+                and not (_SUBASSET_DIRS & {part.lower() for part in p.parent.parts})
             )
         paths = sorted(paths_set)
         if not paths:
