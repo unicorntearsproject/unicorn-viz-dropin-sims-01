@@ -312,6 +312,7 @@ def load_scene(path, options: LoadOptions | None = None) -> LoadedScene | None:
     # UsdSkelCache does not auto-resolve, so the high-level skinning API would
     # otherwise see no animation. Authoring it on the SkelRoot makes the cache
     # resolve it and ComputeSkinningTransforms returns the correct pose.
+    anim_times: list[float] = []
     for skel_prim in (p for p in stage.Traverse() if p.IsA(UsdSkel.Skeleton)):
         anim_prim = _animation_source(skel_prim)
         sroot = _ancestor_skel_root(skel_prim)
@@ -321,6 +322,13 @@ def load_scene(path, options: LoadOptions | None = None) -> LoadedScene | None:
         if not (rb.GetAnimationSourceRel()
                 and rb.GetAnimationSourceRel().GetTargets()):
             rb.CreateAnimationSourceRel().SetTargets([anim_prim.GetPath()])
+        # Collect keyframe times so we can recover the clip's range when the
+        # stage itself authors no start/end timecodes (motion-variant files do).
+        try:
+            anim_times.extend(
+                UsdSkel.Animation(anim_prim).GetRotationsAttr().GetTimeSamples())
+        except Exception:
+            pass
 
     cache = UsdSkel.Cache()
     binders: dict[str, _SkelBinder] = {}   # skinnable prim path -> binder
@@ -341,6 +349,9 @@ def load_scene(path, options: LoadOptions | None = None) -> LoadedScene | None:
 
     # --- Time sampling -----------------------------------------------------
     start, end = stage.GetStartTimeCode(), stage.GetEndTimeCode()
+    if end <= start and anim_times:
+        # Motion-variant clips often omit stage timecodes; use the keyframes.
+        start, end = min(anim_times), max(anim_times)
     has_anim = bool(binders) and end > start and opts.animate
     if has_anim:
         n = max(2, int(opts.frames))

@@ -78,6 +78,10 @@ _SCENE_LOAD_LOCK = threading.Lock()
 # character loads once as its main rig). Lower-cased for case-insensitive match.
 _SUBASSET_DIRS = frozenset({'materials', 'textures', 'motions', 'props', '.thumbs'})
 
+# Motion-variant filename fragments to skip when choosing a character's clip —
+# we want lively performances, not the near-static idle/rest poses.
+_MOTION_EXCLUDE = ('idle', 'pose')
+
 
 # ---------------------------------------------------------------------------
 # Style presets — same rhythm as other asset showcase effects
@@ -447,6 +451,8 @@ class SimShowcase(BaseEffect):
         self._skel_frames = int(self.config.get('skel_frames', 48))
         self._skel_speed = float(self.config.get('skel_speed', 1.0))
         self._face_audio_react = bool(self.config.get('face_audio_react', False))
+        # How many dynamic motion clips to load per character (each is a scene).
+        self._motions_per_char = max(1, int(self.config.get('motions_per_character', 1)))
         pose_t = self.config.get('skel_pose_time', None)
         self._anim_clock = 0.0          # seconds, advances animation playback
         self._dyn_frame = -1            # last frame index uploaded (dirty check)
@@ -470,6 +476,7 @@ class SimShowcase(BaseEffect):
             self.ctx,
             self.__class__._scene_dirs(self.config),
             load_opts,
+            self._motions_per_char,
         ))
 
         # Fallback galaxy
@@ -540,11 +547,13 @@ class SimShowcase(BaseEffect):
         ctx: moderngl.Context,
         scene_dirs: list[Path],
         opts: 'UsdLoadOptions',
+        motions_per_character: int = 1,
     ) -> list[_SceneMesh]:
         cache_key = '|'.join(
             str(d.resolve() if d.exists() else d)
             for d in scene_dirs
-        ) + f'#anim={opts.animate},frames={opts.frames},blend={opts.blendshapes}'
+        ) + (f'#anim={opts.animate},frames={opts.frames},'
+             f'blend={opts.blendshapes},motions={motions_per_character}')
         with _SCENE_LOAD_LOCK:
             cached = _SCENE_CACHE.get(cache_key)
             if cached is not None:
@@ -570,6 +579,25 @@ class SimShowcase(BaseEffect):
                 and not (_SUBASSET_DIRS & {part.lower() for part in p.parent.parts})
             )
         paths = sorted(paths_set)
+
+        # Expand character rigs into their dynamic motion variants: Reallusion
+        # packs ship Props/<stem>.<Motion>.usd files that bind lively clips
+        # (Taunt_Roar, Music_Swinging, …). The base file usually binds only a
+        # near-static idle, so prefer a few random non-idle variants per
+        # character for actual performances. Files with no such variants (the
+        # demo scenes) pass through unchanged.
+        expanded: list[Path] = []
+        for p in paths:
+            variants = sorted((p.parent / 'Props').glob(f'{p.stem}.*.usd'))
+            dynamic = [v for v in variants
+                       if not any(k in v.stem.lower() for k in _MOTION_EXCLUDE)]
+            if dynamic:
+                shuffle(dynamic)
+                expanded.extend(dynamic[:max(1, motions_per_character)])
+            else:
+                expanded.append(p)
+        paths = expanded
+
         if not paths:
             log.info('SimShowcase: no .usd* files in %s', ', '.join(str(d) for d in scene_dirs))
             _SCENE_CACHE[cache_key] = []
@@ -617,7 +645,9 @@ class SimShowcase(BaseEffect):
             scene.point_positions = np.zeros((0, 3), dtype=np.float32)
             cls._upload_scene_buffers(ctx, scene)
             return
-        scene.name = loaded.name or scene.name
+        # Prefer the filename stem (e.g. "Orc.Taunt_Roar") — more descriptive
+        # than the generic default-prim name shared by a character's variants.
+        scene.name = scene.path.stem or loaded.name
         scene.vertices = loaded.vertices
         scene.normals = loaded.normals
         scene.indices = loaded.indices

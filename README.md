@@ -56,6 +56,7 @@ scene_dir = ""               # override path; empty = bundled scenes folder
 skel_animate = true          # bake + play the rig's skeletal animation
 skel_frames = 48             # frames baked across the clip (24-60 typical)
 skel_speed = 1.0             # animation playback rate
+motions_per_character = 1    # dynamic motion clips per character (each a scene)
 # skel_pose_time = 0.0       # static pose timecode when skel_animate = false
 face_audio_react = false     # name-matched facial blendshapes from audio
 # per-effect randomization (same as other effects)
