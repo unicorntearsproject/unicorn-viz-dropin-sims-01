@@ -153,9 +153,10 @@ This is a graceful degradation; the effect remains visually interesting and resp
 
 ## Bundled robots (license-free)
 
-Two procedural, articulated robots ship in `scenes/` and animate out of the box
+Four procedural, articulated robots ship in `scenes/` and animate out of the box
 via time-varying joint transforms (no skeleton): **`robot_arm`** (5-axis
-pick/place sweep) and **`robot_drone`** (quadcopter with spinning rotors). They
+pick/place sweep), **`robot_drone`** (quadcopter with spinning rotors),
+**`robot_quadruped`** (trot gait) and **`robot_hexapod`** (tripod gait). They
 are authored from scratch (see `tools/gen_robots.py`) so they carry no
 third-party licence. Regenerate with:
 

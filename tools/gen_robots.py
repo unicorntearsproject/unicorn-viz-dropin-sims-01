@@ -169,7 +169,66 @@ def build_drone(out: Path):
     print('wrote', out)
 
 
+# ---------------------------------------------------------------------------
+# Legged walkers (quadruped + hexapod) — phased stepping gaits
+# ---------------------------------------------------------------------------
+
+def _leg(stage, parent, name, hip_pos, phase,
+         swing=28.0, lift=36.0, femur=1.2, tibia=1.2):
+    """A 2-segment leg that swings fore/aft at the hip and lifts via the knee.
+
+    ``phase`` offsets this leg in the gait cycle; the knee bends only during the
+    forward half-swing (``max(0, sin)``) so the foot clears the ground.
+    """
+    hip = _xform(stage, f'{parent}/{name}')
+    hip.AddTranslateOp().Set(Gf.Vec3d(*hip_pos))
+    _anim_rotate(hip, lambda f: (swing * math.sin(_phase(f) + phase), 0, 0))
+    _add_mesh(stage, f'{parent}/{name}/Femur', _box(0, -femur / 2, 0, 0.24, femur, 0.24))
+    knee = _xform(stage, f'{parent}/{name}/Knee')
+    knee.AddTranslateOp().Set(Gf.Vec3d(0, -femur, 0))
+    _anim_rotate(knee, lambda f: (lift * max(0.0, math.sin(_phase(f) + phase)), 0, 0))
+    _add_mesh(stage, f'{parent}/{name}/Knee/Tibia', _box(0, -tibia / 2, 0, 0.18, tibia, 0.18))
+    _add_mesh(stage, f'{parent}/{name}/Knee/Foot', _cylinder(0, -tibia, 0, 0.17, 0.12, 10))
+
+
+def build_quadruped(out: Path):
+    stage, root = _new_stage('Quadruped')
+    body = _xform(stage, '/Quadruped/Body')
+    # Bob at twice the step frequency; legs hang from the torso underside.
+    _anim_translate(body, lambda f: (0, 2.4 + 0.12 * math.sin(2 * _phase(f)), 0))
+    _add_mesh(stage, '/Quadruped/Body/Torso', _box(0, 0, 0, 1.6, 0.7, 2.8))
+    _add_mesh(stage, '/Quadruped/Body/Head', _box(0, 0.25, 1.7, 0.7, 0.6, 0.6))
+    _add_mesh(stage, '/Quadruped/Body/Tail', _box(0, 0.1, -1.7, 0.2, 0.2, 0.6))
+    # Trot gait: diagonal pairs move together (FL+BR, then FR+BL).
+    pi = math.pi
+    legs = [('FL', -0.8, 1.2, 0.0), ('FR', 0.8, 1.2, pi),
+            ('BL', -0.8, -1.2, pi), ('BR', 0.8, -1.2, 0.0)]
+    for nm, x, z, ph in legs:
+        _leg(stage, '/Quadruped/Body', nm, (x, -0.25, z), ph)
+    stage.GetRootLayer().Export(str(out))
+    print('wrote', out)
+
+
+def build_hexapod(out: Path):
+    stage, root = _new_stage('Hexapod')
+    body = _xform(stage, '/Hexapod/Body')
+    _anim_translate(body, lambda f: (0, 1.9 + 0.1 * math.sin(2 * _phase(f)), 0))
+    _add_mesh(stage, '/Hexapod/Body/Carapace', _cylinder(0, 0, 0, 1.5, 0.5, 6))
+    _add_mesh(stage, '/Hexapod/Body/Head', _cylinder(0, 0, 1.4, 0.45, 0.4, 8))
+    # Tripod gait: two alternating tripods 180° out of phase.
+    pi = math.pi
+    legs = [('L0', -1.35, 1.0, 0.0), ('L1', -1.35, 0.0, pi), ('L2', -1.35, -1.0, 0.0),
+            ('R0', 1.35, 1.0, pi), ('R1', 1.35, 0.0, 0.0), ('R2', 1.35, -1.0, pi)]
+    for nm, x, z, ph in legs:
+        _leg(stage, '/Hexapod/Body', nm, (x, 0.0, z), ph,
+             swing=24.0, lift=32.0, femur=1.0, tibia=1.1)
+    stage.GetRootLayer().Export(str(out))
+    print('wrote', out)
+
+
 if __name__ == '__main__':
     _SCENES.mkdir(parents=True, exist_ok=True)
     build_robot_arm(_SCENES / 'robot_arm.usda')
     build_drone(_SCENES / 'robot_drone.usda')
+    build_quadruped(_SCENES / 'robot_quadruped.usda')
+    build_hexapod(_SCENES / 'robot_hexapod.usda')
