@@ -432,6 +432,9 @@ class SimShowcase(BaseEffect):
                              and str(self.config.get('transition', 'fade')).lower() != 'cut')
         self._fade = 1.0           # 1 = fully visible, 0 = black (mid-transition)
         self._pending_swap = None  # deferred scene swap, fired at the black point
+        # Dance: audio-reactive secondary motion (beat bounce + hop + sway/twist)
+        # layered on top of each clip. 0 = off, 1 = default, >1 = wilder.
+        self._dance = max(0.0, float(self.config.get('dance', 1.0)))
 
         self._mesh_prog  = self._make_program(_VERT_MESH,   _FRAG_MESH)
         self._point_prog = self._make_program(_VERT_POINTS, _FRAG_POINTS)
@@ -772,7 +775,10 @@ class SimShowcase(BaseEffect):
         self._cam_time += dt * (0.55 + self._mid * 0.95) * max(0.1, self.parameters['speed'])
         self._pal_shift += dt * (0.04 + self._mid * 0.08)
         # Advance skeletal-animation playback (slight beat-driven push).
-        self._anim_clock += dt * max(0.0, self._skel_speed) * (1.0 + self._beat_kick * 0.5)
+        # Baked clip playback surges with the beat/bass so the motion itself
+        # (steps, sweeps) pumps with the music, on top of the dance transform.
+        surge = 1.0 + (self._beat_kick * 1.2 + self._bass * 0.4) * (1.0 if self._dance else 0.0)
+        self._anim_clock += dt * max(0.0, self._skel_speed) * surge
 
     def _reset_scene_clocks(self) -> None:
         """Reset per-scene timers + animation playback (call on scene change)."""
@@ -967,9 +973,26 @@ class SimShowcase(BaseEffect):
         proj = _perspective(np.radians(55.0 / max(float(self.parameters['zoom']), 0.1)), aspect, 0.01, 60.0)
         view = _lookat(eye, target, up)
 
-        # Model: slight bass-pulse scale
-        scale_f = 1.0 + self._bass * 0.08
-        model = np.diag([scale_f, scale_f, scale_f, 1.0]).astype(np.float32)
+        # Model: audio-reactive "dance" — beat squash/stretch + hop + sway/twist
+        # layered on the baked clip so every sim grooves to the music.
+        d = self._dance
+        kick = self._beat_kick
+        bass = self._bass
+        sway  = (0.05 + 0.12 * self._mid) * np.sin(self.time * 2.3) * d
+        twist = (0.04 + 0.10 * self._treble) * np.sin(self.time * 1.7) * d
+        hop   = (0.16 * kick + 0.05 * bass) * d
+        scl_y = 1.0 + (0.18 * kick + 0.06 * bass) * d
+        scl_xz = 1.0 - 0.10 * kick * d + 0.02 * bass * d
+        cz, sz = np.cos(sway), np.sin(sway)
+        ct, st = np.cos(twist), np.sin(twist)
+        rot_z = np.array([[cz, -sz, 0, 0], [sz, cz, 0, 0],
+                          [0, 0, 1, 0], [0, 0, 0, 1]], dtype=np.float32)
+        rot_y = np.array([[ct, 0, st, 0], [0, 1, 0, 0],
+                          [-st, 0, ct, 0], [0, 0, 0, 1]], dtype=np.float32)
+        scale_m = np.diag([scl_xz, scl_y, scl_xz, 1.0]).astype(np.float32)
+        trans_m = np.eye(4, dtype=np.float32)
+        trans_m[1, 3] = hop
+        model = trans_m @ rot_z @ rot_y @ scale_m
 
         mvp       = _mat4_mul(proj, view, model)
         normal_mat = np.linalg.inv(model[:3, :3]).T.astype(np.float32)
