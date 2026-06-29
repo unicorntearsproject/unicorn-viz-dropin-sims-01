@@ -1,8 +1,19 @@
 # sims-01 — Plan: NVIDIA Reallusion USD Character Sets
 
 Owner: Effects
-Status: proposed
+Status: implemented (Tier 0-2 + Tier 3 mechanism); Tier 4 deferred
 Last updated: 2026-06-29
+
+> **Implementation note (2026-06-29):** Tier 0-2 shipped via the reusable
+> `usd_scene.py` loader (prim filtering, manual UsdSkel skinning + animation
+> bake, frame playback in `sim_showcase.py`). Config: `skel_animate`,
+> `skel_frames`, `skel_speed`, `skel_pose_time`, `face_audio_react`. Tier 3 is
+> wired as a name-hint blendshape-weighting mechanism but is a **no-op on the
+> Reallusion pack**, whose 320 blendshapes export with numbered-only names
+> (`CC_Base_Body_blendShape_N`) — no `jaw`/`mouth` semantics to target. It will
+> engage on ARKit/Audio2Face-named exports. A future option: a one-time manual
+> index→feature map per pack, or a spatial (lower-front head) jaw heuristic.
+> Tier 4 (textured PBR) remains deferred.
 
 Plan for supporting NVIDIA's rigged USD **character** packs (Reallusion sample
 set, `Characters_NVD@10012`) in the Sim Showcase effect. These are full

@@ -49,11 +49,26 @@ The audio-reactive parameters are weighted by the scene's presentation style and
 speed = 1.0
 mix_time = 30.0              # seconds before auto-advancing to next scene
 scene_dir = ""               # override path; empty = bundled scenes folder
-preload_videos = false       # true = open all scenes at startup (uses more memory)
+# scene_dirs = "drop-ins/sims-01/scenes,assets/sims"   # extra dirs (comma list)
+# --- Skinned/animated USD characters (UsdSkel rigs) ---
+skel_animate = true          # bake + play the rig's skeletal animation
+skel_frames = 48             # frames baked across the clip (24-60 typical)
+skel_speed = 1.0             # animation playback rate
+# skel_pose_time = 0.0       # static pose timecode when skel_animate = false
+face_audio_react = false     # name-matched facial blendshapes from audio
 # per-effect randomization (same as other effects)
 # random_speed_min = 0.85
 # random_speed_max = 1.15
 ```
+
+Skinned characters (e.g. the NVIDIA Reallusion pack) are baked to a frame
+sequence and played back — see
+[docs/planning-usd-characters.md](docs/planning-usd-characters.md) for the
+design and [assets/sims/README.md](../../assets/sims/README.md) for licensed
+asset placement. The reusable loader lives in `usd_scene.py`. Note: a pack must
+ship **named** facial blendshapes for `face_audio_react` to engage; packs that
+export numbered-only blendshapes (like the Reallusion set) play animation but
+skip facial reactivity.
 
 ### Adding Your Own Scenes
 

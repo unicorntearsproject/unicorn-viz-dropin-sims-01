@@ -36,24 +36,37 @@ Scene cycling:
 """
 from __future__ import annotations
 
+import importlib.util
 import logging
-import struct
+import sys
 import threading
 from pathlib import Path
-from random import shuffle, uniform
+from random import shuffle
 from typing import NamedTuple
 
 import moderngl
 import numpy as np
 
 try:
-    from pxr import Usd, UsdGeom, Gf, Vt  # type: ignore
+    import pxr  # type: ignore  # noqa: F401 - presence gate; USD work in usd_scene
     _USD = True
 except Exception:  # pragma: no cover
     _USD = False
 
 from unicornviz.effects.base import BaseEffect, AudioData
 from unicornviz.paths import resolve_path
+
+# Reusable, GL-free USD loader (sibling module) — handles static meshes plus
+# skinned/animated character rigs and blendshapes across NVIDIA packs.
+_US_PATH = Path(__file__).resolve().parent / 'usd_scene.py'
+_us_spec = importlib.util.spec_from_file_location('sims_usd_scene', _US_PATH)
+if _us_spec is None or _us_spec.loader is None:  # pragma: no cover - import guard
+    raise ImportError(f'sims-01: failed to load {_US_PATH}')
+_usd_scene = importlib.util.module_from_spec(_us_spec)
+sys.modules[_us_spec.name] = _usd_scene
+_us_spec.loader.exec_module(_usd_scene)
+usd_load_scene = _usd_scene.load_scene
+UsdLoadOptions = _usd_scene.LoadOptions
 
 log = logging.getLogger(__name__)
 
@@ -102,6 +115,8 @@ class _SceneMesh:
         'point_positions', 'vbo', 'nbo', 'ibo', 'pbo', 'vao', 'pvao',
         'vert_count', 'point_count', 'bbox_min', 'bbox_max', 'loaded',
         'time_samples', 'current_time',
+        # Skeletal-animation playback (see usd_scene.LoadedScene):
+        'frames', 'frame_normals', 'fps', 'blend_deltas', 'blend_names',
     )
 
     def __init__(self, path: Path) -> None:
@@ -124,6 +139,12 @@ class _SceneMesh:
         self.loaded: bool = False
         self.time_samples: list[float] = []
         self.current_time: float = 0.0
+        # Baked skeletal-animation playback (None for static scenes).
+        self.frames: np.ndarray | None = None         # (F, V, 3)
+        self.frame_normals: np.ndarray | None = None  # (F, V, 3)
+        self.fps: float = 30.0
+        self.blend_deltas: np.ndarray | None = None   # (B, V, 3)
+        self.blend_names: list[str] = []
 
     def release(self) -> None:
         for attr in ('vbo', 'nbo', 'ibo', 'pbo', 'vao', 'pvao'):
@@ -352,166 +373,6 @@ def _mat4_mul(*mats: np.ndarray) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
-# USD scene loading helpers
-# ---------------------------------------------------------------------------
-
-def _compute_normals(verts: np.ndarray, indices: np.ndarray) -> np.ndarray:
-    """Compute per-vertex normals from an indexed triangle mesh."""
-    normals = np.zeros_like(verts)
-    v0 = verts[indices[:, 0]]
-    v1 = verts[indices[:, 1]]
-    v2 = verts[indices[:, 2]]
-    face_normals = np.cross(v1 - v0, v2 - v0)
-    for i in range(3):
-        np.add.at(normals, indices[:, i], face_normals)
-    norms = np.linalg.norm(normals, axis=1, keepdims=True)
-    normals /= norms + 1e-9
-    return normals.astype(np.float32)
-
-
-def _load_usd_stage(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, list[float]]:
-    """Open a USD stage and extract combined mesh vertices/normals/indices
-    and point positions.
-
-    Returns (vertices, normals, indices, point_positions, time_samples).
-    All arrays are float32 / uint32 for direct upload to GL.
-    Returns empty arrays if pxr is unavailable.
-    """
-    if not _USD:
-        return (
-            np.zeros((0, 3), dtype=np.float32),
-            np.zeros((0, 3), dtype=np.float32),
-            np.zeros((0, 3), dtype=np.uint32),
-            np.zeros((0, 3), dtype=np.float32),
-            [],
-        )
-
-    stage = Usd.Stage.Open(str(path.resolve()))
-    if not stage:
-        raise RuntimeError(f'failed to open USD stage: {path}')
-
-    # Collect time samples from stage
-    tc = stage.GetTimeCodesPerSecond()
-    start = stage.GetStartTimeCode()
-    end   = stage.GetEndTimeCode()
-    if end > start:
-        time_samples = [start + (end - start) * t / 24.0 for t in range(25)]
-    else:
-        time_samples = [Usd.TimeCode.Default()]
-
-    all_verts: list[np.ndarray] = []
-    all_norms: list[np.ndarray] = []
-    all_idx:   list[np.ndarray] = []
-    all_pts:   list[np.ndarray] = []
-    vert_offset = 0
-
-    default_time = Usd.TimeCode.Default()
-
-    for prim in stage.Traverse():
-        # --- Mesh ---
-        if prim.IsA(UsdGeom.Mesh):
-            mesh = UsdGeom.Mesh(prim)
-            pts_attr = mesh.GetPointsAttr()
-            fc_attr  = mesh.GetFaceVertexCountsAttr()
-            fi_attr  = mesh.GetFaceVertexIndicesAttr()
-            if not (pts_attr.IsValid() and fc_attr.IsValid() and fi_attr.IsValid()):
-                continue
-            try:
-                def _get_or_first(attr):
-                    v = attr.Get(default_time)
-                    if v is None:
-                        ts = attr.GetTimeSamples()
-                        v = attr.Get(ts[0]) if ts else None
-                    return v
-                _pts_raw = _get_or_first(pts_attr)
-                _fc_raw  = fc_attr.Get(default_time)
-                _fi_raw  = fi_attr.Get(default_time)
-                if _pts_raw is None or _fc_raw is None or _fi_raw is None:
-                    continue
-                pts = np.array(_pts_raw, dtype=np.float32)
-                fc  = np.array(_fc_raw,  dtype=np.int32)
-                fi  = np.array(_fi_raw,  dtype=np.int32)
-            except Exception:
-                continue
-            if len(pts) == 0:
-                continue
-
-            # Apply prim xform
-            xformable = UsdGeom.Xformable(prim)
-            xform = np.eye(4, dtype=np.float32)
-            try:
-                gf_mat = xformable.ComputeLocalToWorldTransform(default_time)
-                for r in range(4):
-                    for c in range(4):
-                        xform[r, c] = gf_mat[r][c]
-            except Exception:
-                pass
-            pts_h = np.concatenate([pts, np.ones((len(pts), 1), dtype=np.float32)], axis=1)
-            pts   = (pts_h @ xform.T)[:, :3]
-
-            # Triangulate faces (fan triangulation)
-            tris = []
-            fi_cursor = 0
-            for count in fc:
-                if count < 3:
-                    fi_cursor += count
-                    continue
-                base = fi[fi_cursor]
-                for k in range(1, count - 1):
-                    tris.append([fi[fi_cursor + k], fi[fi_cursor + k + 1], base])
-                fi_cursor += count
-
-            if not tris:
-                continue
-
-            idx_np = np.array(tris, dtype=np.uint32) + vert_offset
-            norms  = _compute_normals(pts, np.array(tris, dtype=np.uint32))
-
-            all_verts.append(pts)
-            all_norms.append(norms)
-            all_idx.append(idx_np)
-            vert_offset += len(pts)
-
-        # --- Points / particles ---
-        elif prim.IsA(UsdGeom.Points):
-            pts_prim = UsdGeom.Points(prim)
-            pts_attr  = pts_prim.GetPointsAttr()
-            if not pts_attr.IsValid():
-                continue
-            try:
-                _pts_raw = pts_attr.Get(default_time)
-                if _pts_raw is None:
-                    _ts = pts_attr.GetTimeSamples()
-                    _pts_raw = pts_attr.Get(_ts[0]) if _ts else None
-                if _pts_raw is None:
-                    continue
-                pts = np.array(_pts_raw, dtype=np.float32)
-            except Exception:
-                continue
-            if len(pts) > 0:
-                all_pts.append(pts)
-
-    vertices = np.concatenate(all_verts, axis=0) if all_verts else np.zeros((0, 3), dtype=np.float32)
-    normals  = np.concatenate(all_norms, axis=0) if all_norms else np.zeros((0, 3), dtype=np.float32)
-    indices  = np.concatenate(all_idx,   axis=0) if all_idx  else np.zeros((0, 3), dtype=np.uint32)
-    points   = np.concatenate(all_pts,   axis=0) if all_pts  else np.zeros((0, 3), dtype=np.float32)
-
-    # Normalize scene to unit cube centred at origin
-    all_geo = vertices if len(vertices) else points
-    if len(all_geo) > 0:
-        bbox_min = all_geo.min(axis=0)
-        bbox_max = all_geo.max(axis=0)
-        centre   = (bbox_min + bbox_max) * 0.5
-        scale    = np.max(bbox_max - bbox_min) + 1e-9
-        if len(vertices) > 0:
-            vertices = (vertices - centre) / scale
-        if len(points) > 0:
-            points = (points - centre) / scale
-
-    return vertices, normals, indices, points, list(time_samples)
-
-
-# ---------------------------------------------------------------------------
 # Effect class
 # ---------------------------------------------------------------------------
 
@@ -564,15 +425,32 @@ class SimShowcase(BaseEffect):
         shuffle(self._style_order)
         self._beat_kick = 0.0
 
+        # Skeletal-animation playback options (Tier 1/2) + audio-reactive
+        # blendshapes (Tier 3). All optional; static packs ignore them.
+        self._skel_animate = bool(self.config.get('skel_animate', True))
+        self._skel_frames = int(self.config.get('skel_frames', 48))
+        self._skel_speed = float(self.config.get('skel_speed', 1.0))
+        self._face_audio_react = bool(self.config.get('face_audio_react', False))
+        pose_t = self.config.get('skel_pose_time', None)
+        self._anim_clock = 0.0          # seconds, advances animation playback
+        self._dyn_frame = -1            # last frame index uploaded (dirty check)
+
         # Pre-allocate camera state
         self._cam_eye    = np.array([0.0, 0.0, 3.0], dtype=np.float32)
         self._proj       = np.eye(4, dtype=np.float32)
         self._view       = np.eye(4, dtype=np.float32)
 
         # Load USD scenes
+        load_opts = UsdLoadOptions(
+            animate=self._skel_animate,
+            frames=max(2, self._skel_frames),
+            pose_time=float(pose_t) if pose_t is not None else None,
+            blendshapes=self._face_audio_react,
+        )
         self._scenes = self.__class__._load_scene_pack_cached(
             self.ctx,
             self.__class__._scene_dirs(self.config),
+            load_opts,
         )
 
         # Fallback galaxy
@@ -640,11 +518,12 @@ class SimShowcase(BaseEffect):
         cls,
         ctx: moderngl.Context,
         scene_dirs: list[Path],
+        opts: 'UsdLoadOptions',
     ) -> list[_SceneMesh]:
         cache_key = '|'.join(
             str(d.resolve() if d.exists() else d)
             for d in scene_dirs
-        )
+        ) + f'#anim={opts.animate},frames={opts.frames},blend={opts.blendshapes}'
         with _SCENE_LOAD_LOCK:
             cached = _SCENE_CACHE.get(cache_key)
             if cached is not None:
@@ -673,7 +552,7 @@ class SimShowcase(BaseEffect):
         for path in paths:
             try:
                 scene = _SceneMesh(path)
-                cls._load_scene_gl(ctx, scene)
+                cls._load_scene_gl(ctx, scene, opts)
                 if scene.vert_count == 0 and scene.point_count == 0:
                     # No geometry extracted — almost always because pxr/OpenUSD
                     # is not installed (then every stage yields empty arrays), or
@@ -701,14 +580,27 @@ class SimShowcase(BaseEffect):
         return scenes
 
     @classmethod
-    def _load_scene_gl(cls, ctx: moderngl.Context, scene: _SceneMesh) -> None:
-        verts, norms, idxs, pts, time_samples = _load_usd_stage(scene.path)
-        scene.time_samples  = time_samples
-        scene.vertices      = verts
-        scene.normals       = norms
-        scene.indices       = idxs
-        scene.point_positions = pts
-
+    def _load_scene_gl(cls, ctx: moderngl.Context, scene: _SceneMesh,
+                       opts: 'UsdLoadOptions') -> None:
+        loaded = usd_load_scene(scene.path, opts)
+        if loaded is None:
+            scene.vertices = np.zeros((0, 3), dtype=np.float32)
+            scene.normals = np.zeros((0, 3), dtype=np.float32)
+            scene.indices = np.zeros((0, 3), dtype=np.uint32)
+            scene.point_positions = np.zeros((0, 3), dtype=np.float32)
+            cls._upload_scene_buffers(ctx, scene)
+            return
+        scene.name = loaded.name or scene.name
+        scene.vertices = loaded.vertices
+        scene.normals = loaded.normals
+        scene.indices = loaded.indices
+        scene.point_positions = loaded.points
+        # Animation + blendshape payload (None for static scenes).
+        scene.frames = loaded.frames
+        scene.frame_normals = loaded.frame_normals
+        scene.fps = float(loaded.fps)
+        scene.blend_deltas = loaded.blend_deltas
+        scene.blend_names = list(loaded.blend_names)
         cls._upload_scene_buffers(ctx, scene)
 
     @classmethod
@@ -807,6 +699,8 @@ class SimShowcase(BaseEffect):
         self._orbit += dt * (0.18 + self._mid * 0.35) * max(0.1, self.parameters['speed'])
         self._cam_time += dt * (0.55 + self._mid * 0.95) * max(0.1, self.parameters['speed'])
         self._pal_shift += dt * (0.04 + self._mid * 0.08)
+        # Advance skeletal-animation playback (slight beat-driven push).
+        self._anim_clock += dt * max(0.0, self._skel_speed) * (1.0 + self._beat_kick * 0.5)
 
     def _advance_scene(self) -> None:
         if len(self._scenes) > 1:
@@ -848,6 +742,43 @@ class SimShowcase(BaseEffect):
     # ------------------------------------------------------------------
     # Render
     # ------------------------------------------------------------------
+
+    def _stream_animation_frame(self, scene: _SceneMesh) -> None:
+        """Stream the current baked animation frame (+ optional audio-reactive
+        blendshapes) into the scene's vertex/normal buffers.
+
+        No-op for static scenes (``scene.frames is None``).  Frames are baked,
+        normalised CPU arrays; we write the active frame into the existing GPU
+        buffers each render (single active effect instance at a time).
+        """
+        frames = scene.frames
+        if frames is None or scene.vbo is None or scene.nbo is None:
+            return
+        n = len(frames)
+        idx = int(self._anim_clock * scene.fps) % n if n > 1 else 0
+
+        verts = frames[idx]
+        norms = scene.frame_normals[idx] if scene.frame_normals is not None \
+            else scene.normals
+
+        # Tier 3: audio-reactive blendshape weighting (e.g. jaw on bass).
+        # Only engages when the pack ships name-matched blendshapes; otherwise
+        # blend_deltas is None and playback is animation-only.
+        deltas = scene.blend_deltas
+        if self._face_audio_react and deltas is not None and len(deltas):
+            bands = (self._bass, self._treble, self._mid, self._beat)
+            verts = verts.copy()
+            for i in range(len(deltas)):
+                w = float(np.clip(bands[i % len(bands)] * 1.4, 0.0, 1.2))
+                if w > 1e-3:
+                    verts += deltas[i] * w
+
+        # Skip redundant uploads when the frame is unchanged and no face react.
+        if idx == self._dyn_frame and not self._face_audio_react:
+            return
+        self._dyn_frame = idx
+        scene.vbo.write(np.ascontiguousarray(verts, dtype=np.float32).tobytes())
+        scene.nbo.write(np.ascontiguousarray(norms, dtype=np.float32).tobytes())
 
     def render(self) -> None:
         if not self._scenes:
@@ -929,6 +860,9 @@ class SimShowcase(BaseEffect):
                 pass
 
         style_phase = self._style_order[self._style_index] / max(1, len(_STYLE_PRESETS))
+
+        # --- Skeletal-animation playback: stream the current frame ---
+        self._stream_animation_frame(scene)
 
         # --- Render mesh geometry ---
         if scene.vert_count > 0 and scene.vbo is not None:

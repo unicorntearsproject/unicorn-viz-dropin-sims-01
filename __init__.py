@@ -1,12 +1,7 @@
-"""sims-01 drop-in package for unicorn-viz.
+"""sims-01 drop-in package marker.
 
-Provides the SimShowcase effect which renders OpenUSD scenes (.usda / .usdc /
-.usdz) as audio-reactive fullscreen 3D visuals.  When no scene files are
-present a built-in spiral-galaxy particle fallback is used so the effect is
-never blank.
+The SimShowcase effect is discovered/loaded by the core against its file path
+(``sim_showcase.py``) — the hyphenated directory is not a valid module name and
+``discover_dropin_effect_classes`` skips ``__init__.py`` — so this file performs
+no imports. See ``sim_showcase.py`` (effect) and ``usd_scene.py`` (USD loader).
 """
-from __future__ import annotations
-
-from .sim_showcase import SimShowcase
-
-__all__ = ['SimShowcase']
