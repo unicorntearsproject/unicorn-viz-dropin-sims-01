@@ -674,11 +674,27 @@ class SimShowcase(BaseEffect):
             try:
                 scene = _SceneMesh(path)
                 cls._load_scene_gl(ctx, scene)
+                if scene.vert_count == 0 and scene.point_count == 0:
+                    # No geometry extracted — almost always because pxr/OpenUSD
+                    # is not installed (then every stage yields empty arrays), or
+                    # an empty stage. Skip it so the caller falls back to the
+                    # built-in galaxy scene instead of rendering a black frame.
+                    scene.release()
+                    log.warning('SimShowcase: %s produced no geometry; skipping',
+                                path.name)
+                    continue
                 scenes.append(scene)
                 log.info('SimShowcase: loaded %s (verts=%d pts=%d)',
                          path.name, scene.vert_count, scene.point_count)
             except Exception as exc:
                 log.warning('SimShowcase: failed to load %s: %s', path, exc)
+
+        if not scenes and not _USD:
+            log.warning(
+                'SimShowcase: pxr/OpenUSD is not installed, so no .usd* scene '
+                'can be loaded — falling back to the built-in galaxy scene. '
+                'Install OpenUSD (pip install usd-core) to enable the USD scenes.'
+            )
 
         with _SCENE_LOAD_LOCK:
             _SCENE_CACHE[cache_key] = scenes
