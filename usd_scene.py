@@ -105,6 +105,19 @@ class LoadedScene:
 # Geometry helpers
 # ---------------------------------------------------------------------------
 
+def _zup_to_yup(arr: np.ndarray) -> np.ndarray:
+    """Rotate Z-up coordinates/vectors into the renderer's Y-up convention.
+
+    USD stages may be authored Z-up (NVIDIA character packs) or Y-up (our demo
+    scenes); the renderer is Y-up. Maps (x, y, z) -> (x, z, -y), a -90° rotation
+    about X. Works for positions and (direction) normals alike. Operates on the
+    last axis, so it handles (N,3) and (F,V,3) arrays.
+    """
+    out = arr[..., [0, 2, 1]].copy()
+    out[..., 2] *= -1.0
+    return out
+
+
 def _compute_normals(verts: np.ndarray, tris: np.ndarray) -> np.ndarray:
     """Area-weighted vertex normals for a triangle mesh."""
     normals = np.zeros_like(verts)
@@ -400,6 +413,15 @@ def load_scene(path, options: LoadOptions | None = None) -> LoadedScene | None:
         else np.zeros((0, 3), dtype=np.uint32)
     points = np.concatenate(loose_points, axis=0) if loose_points \
         else np.zeros((0, 3), dtype=np.float32)
+
+    # Convert Z-up stages into the renderer's Y-up before normalising so normals
+    # (computed below from these positions) come out correct automatically.
+    if UsdGeom.GetStageUpAxis(stage) == 'Z':
+        if frames_np is not None:
+            frames_np = _zup_to_yup(frames_np)
+        if len(points):
+            points = _zup_to_yup(points)
+        blend_deltas = [(off, _zup_to_yup(local)) for off, local in blend_deltas]
 
     # Normalise by the base frame's bbox; apply to every frame + points.
     ref = frames_np[0] if frames_np is not None else points

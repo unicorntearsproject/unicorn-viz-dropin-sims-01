@@ -31,8 +31,8 @@ Audio reactivity:
 - beat  → hard camera cut between scenes and bloom spike
 
 Scene cycling:
-- Scenes cycle on beat accumulation (configurable `mix_time` in seconds).
-- Beat events in quick succession trigger an early cut.
+- Each scene stays up for a random dwell in [`dwell_min`, `dwell_max`] seconds.
+- A burst of beats may cut early, but never before `dwell_min`.
 """
 from __future__ import annotations
 
@@ -410,12 +410,20 @@ class SimShowcase(BaseEffect):
             'zoom': float(self.config.get('zoom', 1.0)),
         }
 
+        # Per-scene dwell window (seconds). Each scene stays up for a random
+        # time in [dwell_min, dwell_max]; a beat burst may cut early but never
+        # before dwell_min, so scenes never flicker past too fast.
+        self._dwell_min = max(0.5, float(self.config.get('dwell_min', 7.0)))
+        self._dwell_max = max(self._dwell_min,
+                              float(self.config.get('dwell_max', 20.0)))
+
         self._mesh_prog  = self._make_program(_VERT_MESH,   _FRAG_MESH)
         self._point_prog = self._make_program(_VERT_POINTS, _FRAG_POINTS)
 
         self._scenes: list[_SceneMesh] = []
         self._current  = 0
         self._timer    = 0.0
+        self._dwell    = self.rng.uniform(self._dwell_min, self._dwell_max)
         self._beat_acc = 0.0
         self._bass     = 0.0
         self._mid      = 0.0
@@ -700,11 +708,13 @@ class SimShowcase(BaseEffect):
         self._bloom = max(0.0, self._bloom - dt * 4.0)
         self._beat_kick = max(0.0, self._beat_kick - dt * 3.0)
 
-        mix_time = max(1.0, self.parameters['mix_time'])
         self._timer += dt * max(0.1, self.parameters['speed'])
 
-        # Advance scene on timer or beat accumulation
-        if self._timer >= mix_time or self._beat_acc >= 1.0:
+        # Advance at the rolled dwell, or let a beat burst cut early — but never
+        # before dwell_min, so each scene stays up a sensible 7-20s.
+        if self._timer >= self._dwell or (
+            self._timer >= self._dwell_min and self._beat_acc >= 1.0
+        ):
             self._advance_scene()
 
         # Camera orbit speed modulated by mid
@@ -720,6 +730,8 @@ class SimShowcase(BaseEffect):
         self._beat_acc = 0.0
         self._anim_clock = 0.0
         self._dyn_frame = -1
+        # Re-roll this scene's dwell so each gets its own 7-20s (configurable).
+        self._dwell = self.rng.uniform(self._dwell_min, self._dwell_max)
 
     def _announce_scene(self, reason: str) -> None:
         """Info-log the scene that just became active."""

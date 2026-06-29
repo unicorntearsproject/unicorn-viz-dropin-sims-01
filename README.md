@@ -47,7 +47,8 @@ The audio-reactive parameters are weighted by the scene's presentation style and
 ```toml
 [effects.SimShowcase]
 speed = 1.0
-mix_time = 30.0              # seconds before auto-advancing to next scene
+dwell_min = 7.0              # min seconds a scene stays up
+dwell_max = 20.0             # max seconds; each scene picks a random dwell in range
 scene_dir = ""               # override path; empty = bundled scenes folder
 # scene_dirs = "drop-ins/sims-01/scenes,assets/sims"   # extra dirs (comma list)
 # --- Skinned/animated USD characters (UsdSkel rigs) ---
