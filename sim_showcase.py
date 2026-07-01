@@ -400,7 +400,7 @@ class SimShowcase(BaseEffect):
 
     NAME   = 'Sim Showcase'
     AUTHOR = 'unicorn-viz drop-in'
-    TAGS   = ['3d', 'usd', 'simulation', 'audio', 'drop-in']
+    TAGS = ['media', '3d', 'usd', 'simulation']
     HELP_ENTRIES = [
         ('Sim Showcase', 'Ctrl+N', 'Next USD scene'),
         ('Sim Showcase', 'Ctrl+P', 'Prev USD scene'),
