@@ -487,20 +487,57 @@ class SimShowcase(BaseEffect):
         # Copy the cached list so we can shuffle per-instance without mutating
         # the shared cache; a random order (and thus a random first scene) makes
         # each run distinct per the effect-randomization guideline.
-        self._scenes = list(self.__class__._load_scene_pack_cached(
+        scene_dirs = self.__class__._scene_dirs(self.config)
+        all_scenes = list(self.__class__._load_scene_pack_cached(
             self.ctx,
-            self.__class__._scene_dirs(self.config),
+            scene_dirs,
             load_opts,
             self._motions_per_char,
         ))
 
         # Fallback galaxy
-        if not self._scenes:
+        if not all_scenes:
             self._scenes = [self._make_galaxy_scene()]
+        else:
+            # Per activation, play only one directory group (a subdirectory, or
+            # the shared group of loose scenes) of the loaded scenes.
+            self._scenes = self._select_scene_group(all_scenes, scene_dirs) or list(all_scenes)
 
-        shuffle(self._scenes)
+        self._reshuffle_scenes()
+        self._current = 0
         log.info('SimShowcase: %d scene(s) ready', len(self._scenes))
         self._announce_scene('initial')
+
+    def _select_scene_group(self, scenes: 'list[_SceneMesh]', scene_dirs: list[Path]) -> 'list[_SceneMesh]':
+        """Group loaded scenes by their immediate subdirectory under a scene dir
+        (loose scenes per dir form one group) and return one random group."""
+        if len(scenes) <= 1:
+            return list(scenes)
+        resolved = [d.resolve() for d in scene_dirs if d.exists()]
+        groups: dict = {}
+        for sc in scenes:
+            key = ('<other>', '<loose>')
+            try:
+                sp = Path(sc.path).resolve()
+                for rd in resolved:
+                    try:
+                        rel = sp.relative_to(rd)
+                    except ValueError:
+                        continue
+                    sub = rel.parts[0] if len(rel.parts) > 1 else '<loose>'
+                    key = (str(rd), sub)
+                    break
+            except Exception:
+                pass
+            groups.setdefault(key, []).append(sc)
+        keys = sorted(groups.keys())
+        return groups[keys[int(self.rng.integers(len(keys)))]]
+
+    def _reshuffle_scenes(self) -> None:
+        """Shuffle the active scene order for this activation (rng)."""
+        if len(self._scenes) > 1:
+            order = list(self.rng.permutation(len(self._scenes)))
+            self._scenes = [self._scenes[i] for i in order]
 
     @property
     def current_position_label(self) -> str:
@@ -887,6 +924,8 @@ class SimShowcase(BaseEffect):
     def _advance_scene(self) -> None:
         if len(self._scenes) > 1:
             self._current = (self._current + 1) % len(self._scenes)
+            if self._current == 0:
+                self._reshuffle_scenes()  # no repeats until the group is exhausted
             self._style_index = (self._style_index + 1) % len(self._style_order)
             if self._style_index == 0:
                 shuffle(self._style_order)
