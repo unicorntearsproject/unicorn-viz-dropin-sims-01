@@ -1,6 +1,6 @@
 # sims-01 — 3D Scene Showcase
 
-**Version 0.7.0**
+**Version 0.7.1**
 
 
 A drop-in effect for [unicorn-viz](https://github.com/iDoMeteor/unicorn-viz) that renders a gallery of 3D scenes and models using OpenUSD (USD/USDC/USDZ) and IsaacLab-compatible geometries with full audio-reactivity.
@@ -229,4 +229,8 @@ For developers interested in extending or modifying Sim Showcase:
 
 ## Changelog
 
+- **0.7.1** — fix grid-overlay shader bug that painted blotchy dark patches
+  across every mesh (the "subtle wireframe" distance field was measuring
+  distance to each grid cell's *centre* instead of its *line*, inverting the
+  effect).
 - **0.7.0** — initial versioned release.

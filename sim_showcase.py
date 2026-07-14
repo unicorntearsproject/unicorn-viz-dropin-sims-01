@@ -36,7 +36,7 @@ Scene cycling:
 """
 from __future__ import annotations
 
-__version__ = '0.7.0'
+__version__ = '0.7.1'
 
 import importlib.util
 import logging
@@ -270,8 +270,10 @@ vec3 palette(float t) {
 }
 
 float sdGrid(vec3 p, float cellSize) {
-    vec3 q = mod(p, cellSize) - cellSize * 0.5;
-    return min(min(abs(q.x), abs(q.y)), abs(q.z));
+    // Distance to the nearest grid LINE (not the cell centre): phase-shift by
+    // half a cell so p = k*cellSize (a line) lands at q = 0.
+    vec3 q = abs(mod(p + cellSize * 0.5, cellSize) - cellSize * 0.5);
+    return min(min(q.x, q.y), q.z);
 }
 
 void main() {
