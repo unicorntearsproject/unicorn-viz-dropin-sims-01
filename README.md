@@ -1,5 +1,8 @@
 # sims-01 — 3D Scene Showcase
 
+**Version 0.7.0**
+
+
 A drop-in effect for [unicorn-viz](https://github.com/iDoMeteor/unicorn-viz) that renders a gallery of 3D scenes and models using OpenUSD (USD/USDC/USDZ) and IsaacLab-compatible geometries with full audio-reactivity.
 
 ## Description
@@ -223,3 +226,7 @@ For developers interested in extending or modifying Sim Showcase:
 ## 2026-05-22 Update
 
 - Sim Showcase audio channels now consume normalized band dynamics (`bass_n/mid_n/treble_n`) for more consistent behavior across track loudness swings.
+
+## Changelog
+
+- **0.7.0** — initial versioned release.

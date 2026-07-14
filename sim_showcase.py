@@ -36,6 +36,8 @@ Scene cycling:
 """
 from __future__ import annotations
 
+__version__ = '0.7.0'
+
 import importlib.util
 import logging
 import sys
