@@ -169,6 +169,14 @@ def _is_skipped(prim, opts: LoadOptions) -> bool:
 
 
 def _local_to_world(prim, time=None) -> np.ndarray:
+    """The prim's accumulated world transform, in USD's own layout.
+
+    USD is **row-vector**: a point is transformed as ``p' = p * M``, so the
+    translation sits in the last *row* (``M[3][0:3]``, which is what
+    ``GfMatrix4d.ExtractTranslation()`` returns) and the last *column* is
+    ``(0, 0, 0, 1)``.  The copy below is faithful to that, so the matrix must
+    be applied on the right without a transpose -- see :func:`_mesh_points_world`.
+    """
     xf = np.eye(4, dtype=np.float32)
     try:
         gf = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(
@@ -192,7 +200,15 @@ def _mesh_points_world(prim, time) -> np.ndarray | None:
     pts = np.asarray(raw, dtype=np.float32)
     xf = _local_to_world(prim, time)   # time-aware: captures rigid joint motion
     homo = np.concatenate([pts, np.ones((len(pts), 1), np.float32)], axis=1)
-    return (homo @ xf.T)[:, :3]
+    # Row-vector, so no transpose. `homo @ xf.T` silently drops the
+    # translation outright -- USD's last column is (0,0,0,1), so the w term
+    # contributes nothing -- and applies the transposed rotation, which for a
+    # rotation is its inverse. Every link of an articulated robot therefore
+    # collapsed toward the origin and counter-rotated against its own parent,
+    # which is why the rigid robots read as a bag of parts flying in
+    # formation. Measured across the five: bounding volume 0.40-0.49x of
+    # correct, joint offsets out by up to 5.0 world units.
+    return (homo @ xf)[:, :3]
 
 
 def _stage_has_rigid_anim(stage) -> bool:

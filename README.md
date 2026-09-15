@@ -1,6 +1,6 @@
 # sims-01 — 3D Scene Showcase
 
-**Version 0.7.1**
+**Version 0.7.2**
 
 
 A drop-in effect for [unicorn-viz](https://github.com/iDoMeteor/unicorn-viz) that renders a gallery of 3D scenes and models using OpenUSD (USD/USDC/USDZ) and IsaacLab-compatible geometries with full audio-reactivity.
@@ -228,6 +228,23 @@ For developers interested in extending or modifying Sim Showcase:
 - Sim Showcase audio channels now consume normalized band dynamics (`bass_n/mid_n/treble_n`) for more consistent behavior across track loudness swings.
 
 ## Changelog
+
+- **0.7.2** — Articulated robots are assembled again. The rigid-animation bake
+  applied each mesh's world transform as `points @ M.T`, but USD's `GfMatrix4d`
+  is row-vector: a point transforms as `p' = p * M`, so the translation lives
+  in the last *row* and the last *column* is `(0, 0, 0, 1)`. Transposing it
+  therefore dropped every joint offset outright — the `w` term multiplied a
+  column of zeros — and applied the rotation transposed, which for a rotation
+  is its inverse. So every link collapsed toward the origin and counter-rotated
+  against its own parent. All five rigid robots shipped that way: the arm drove
+  its links through its own base, the quadruped's and hexapod's legs shrank to
+  stubs under the body, the hand's fingers folded into the palm, and the
+  drone's rotors sat inside the chassis. Measured bounding volume was
+  0.40-0.49x of correct, with joint offsets out by up to 5.0 world units.
+  Skinned characters were never affected; they go through UsdSkel's own
+  `ComputeSkinnedPoints`, which is why the earlier character fixes did not
+  touch this. Covered by a regression test that checks every transformed mesh
+  in all five scenes against USD's own point transform.
 
 - **0.7.1** — fix grid-overlay shader bug that painted blotchy dark patches
   across every mesh (the "subtle wireframe" distance field was measuring

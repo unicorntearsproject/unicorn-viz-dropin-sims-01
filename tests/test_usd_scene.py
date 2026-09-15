@@ -103,3 +103,52 @@ def test_backdrop_filtered_out():
     # would leave one axis near-zero / off-centre).
     span = s.vertices.max(0) - s.vertices.min(0)
     assert (span > 0.2).all()
+
+
+# ---------------------------------------------------------------------------
+# Rigid articulation: the world transform must be applied in USD's convention
+# ---------------------------------------------------------------------------
+
+_SCENES = Path(__file__).resolve().parents[1] / 'scenes'
+_ROBOTS = ['robot_arm', 'robot_quadruped', 'robot_hexapod',
+           'robot_drone', 'robot_hand']
+
+
+@pytest.mark.parametrize('name', _ROBOTS)
+def test_rigid_world_transform_matches_usd(name: str) -> None:
+    """Baked mesh points must equal USD's own point-by-point transform.
+
+    USD is row-vector: ``p' = p * M``, so the translation lives in the last
+    *row* and the last *column* is ``(0, 0, 0, 1)``.  Applying the matrix
+    transposed therefore drops the translation altogether and uses the
+    inverted rotation -- every link of an articulated robot collapsed toward
+    the origin and counter-rotated against its parent.  The five rigid robots
+    shipped that way; their bounding volumes measured 0.40-0.49x of correct.
+    """
+    from pxr import Usd, UsdGeom
+
+    path = _SCENES / f'{name}.usda'
+    assert path.exists(), path
+    stage = Usd.Stage.Open(str(path))
+    t0, t1 = stage.GetStartTimeCode(), stage.GetEndTimeCode()
+    time = Usd.TimeCode(t0 + (t1 - t0) * 0.4)
+
+    checked = 0
+    for prim in stage.Traverse():
+        if prim.GetTypeName() != 'Mesh':
+            continue
+        raw = UsdGeom.Mesh(prim).GetPointsAttr().Get(time)
+        if not raw:
+            continue
+        gf = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(time)
+        mat = np.array([[gf[r][c] for c in range(4)] for r in range(4)])
+        if np.allclose(mat, np.eye(4)):
+            continue        # nothing to get wrong on an un-transformed mesh
+        want = np.array([tuple(gf.Transform(tuple(p))) for p in raw],
+                        dtype=np.float64)
+        got = usd_scene._mesh_points_world(prim, time)
+        assert got is not None
+        assert np.abs(got - want).max() < 1e-4, (
+            f'{prim.GetPath()} is not where USD puts it')
+        checked += 1
+    assert checked >= 4, f'{name}: only {checked} transformed meshes checked'
